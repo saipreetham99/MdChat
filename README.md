@@ -93,9 +93,22 @@ file, and `:w`, `:wq`, and `:prev` are wired to the same path.
 
 The editor is CodeMirror 5 with its `keymap/vim`, so you get the real thing:
 insert, replace, visual and visual-line modes, counts, text objects (`ciw`),
-`dd`, registers, macros, `/` search with the dialog addon. The mode shows in the
-same bottom-right badge the preview uses. ⌘↩ sends the visual selection as
-context, or the paragraph around the cursor if nothing is selected.
+`dd`, registers, macros, `/` and `?` search with `n`/`N`, `:` ex commands. The
+mode shows in the same bottom-right badge the preview uses. ⌘↩ sends the visual
+selection as context, or the paragraph around the cursor if nothing is selected.
+
+`s` does the same flash-style jump here as in the preview, labelling matches on
+the visible lines with `markText` and `addWidget`. Only lowercase `s` is taken,
+so vim's `S` still changes a line and `cl` covers what `s` used to do. From
+visual mode the jump extends the selection.
+
+The cursor survives the switch. Rendered HTML has the markup stripped, so
+there's no direct line/column correspondence to recover — instead both sides are
+normalised the same way (markup punctuation dropped, whitespace collapsed, with
+an index map back to the original) and matched on a short probe string taken at
+the cursor, retried at shrinking lengths. A heading cursor sitting on `Use` in
+`## When to **Use** Inheritance` lands past the asterisks, not on them. When no
+probe matches, it falls back to the start of the enclosing block.
 
 Both views share one `WKWebView` and one buffer. The preview's own vim layer
 stands down whenever the editor is showing, so the two keymaps never both see a

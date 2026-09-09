@@ -215,6 +215,10 @@
     box-shadow: 0 1px 3px rgba(0,0,0,.3);
   }
   .jump-label.dim { background: var(--muted); }
+  .cm-jump-hl {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: 2px;
+  }
 
   .flash { animation: flash .45s ease-out; }
   @keyframes flash {
@@ -247,6 +251,7 @@
 <script src="vendor/cm-xml.js"></script>
 <script src="vendor/cm-markdown.js"></script>
 <script src="vendor/cm-dialog.js"></script>
+<script src="vendor/cm-searchcursor.js"></script>
 <script src="vendor/cm-vim.js"></script>
 <script>
 (function () {
@@ -493,6 +498,12 @@
   var jumpQuery = "";
   var jumpTargets = [];
   var vimMode = "normal";
+  var edJumping = false;
+  var edQuery = "";
+  var edTargets = [];
+  var edMarks = [];
+  var edWidgets = [];
+  var edAnchor = null;
   // Home-row first, and no characters that commonly follow a match.
   var LABELS = "jfkdlshgurnvieowmbcxztpqay";
 
@@ -618,8 +629,11 @@
   function updateBadge() {
     var bits = [];
     if (view === "edit") {
-      bits.push("<b>" + escHtml(vimMode.toUpperCase()) + "</b>");
-      if (bits.length) { badge.innerHTML = bits.join("   "); badge.classList.add("on"); }
+      bits.push(edJumping
+        ? "<b>JUMP</b> " + escHtml(edQuery)
+        : "<b>" + escHtml(vimMode.toUpperCase()) + "</b>");
+      badge.innerHTML = bits.join("   ");
+      badge.classList.add("on");
       return;
     }
     if (jumping) bits.push("<b>JUMP</b> " + escHtml(jumpQuery));
@@ -759,6 +773,26 @@
       window.setView("preview");
     });
 
+    cm.on("keydown", function (editor, e) {
+      if (edJumping) {
+        e.preventDefault();
+        e.codemirrorIgnore = true;
+        edJumpKey(e);
+        return;
+      }
+      // lowercase s only, so vim's S (change line) and cl survive
+      if (e.key === "s" && !e.metaKey && !e.ctrlKey && !e.altKey &&
+          (vimMode === "normal" || vimMode.indexOf("visual") === 0)) {
+        e.preventDefault();
+        e.codemirrorIgnore = true;
+        edStart();
+      }
+    });
+
+    cm.on("scroll", function () {
+      if (edJumping) edRefresh();
+    });
+
     cm.on("vim-mode-change", function (e) {
       vimMode = e.mode + (e.subMode ? " " + e.subMode : "");
       updateBadge();
@@ -779,11 +813,280 @@
     return out.join("\n");
   }
 
+  // --- cursor mapping between the two views ------------------------------
+  // Rendered text has the markup stripped, so both sides get normalised the
+  // same way and matched on a short probe string taken at the cursor.
+  var MD_NOISE = /[*_`~#>\[\]]/;
+
+  function cleanText(str) {
+    var text = "", map = [], space = false;
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charAt(i);
+      if (MD_NOISE.test(c)) continue;
+      if (/\s/.test(c)) {
+        if (space || !text.length) continue;
+        text += " ";
+        map.push(i);
+        space = true;
+        continue;
+      }
+      text += c;
+      map.push(i);
+      space = false;
+    }
+    return { text: text, map: map };
+  }
+
+  /** Flat text of an element, with a DOM point for every character. */
+  function flatten(el) {
+    var w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    var text = "", points = [], n, i;
+    while ((n = w.nextNode())) {
+      for (i = 0; i < n.nodeValue.length; i++) {
+        text += n.nodeValue.charAt(i);
+        points.push({ node: n, offset: i });
+      }
+    }
+    return { text: text, points: points };
+  }
+
+  /** Flat-text index of a DOM point, tolerating an offset at a node's end. */
+  function indexOfPoint(flat, point) {
+    var i;
+    for (i = 0; i < flat.points.length; i++) {
+      if (flat.points[i].node === point.node && flat.points[i].offset === point.offset) return i;
+    }
+    for (i = flat.points.length - 1; i >= 0; i--) {
+      if (flat.points[i].node === point.node) return i + 1;
+    }
+    return 0;
+  }
+
+  /**
+   * Match `probe` against source lines. edge "start" anchors on the probe's
+   * first character; edge "end" anchors just past its last, which is what keeps
+   * an end-of-line cursor at the end of the line.
+   */
+  function probeLines(lines, probe, edge) {
+    if (!probe) return null;
+    for (var len = probe.length; len >= 3; len = Math.floor(len / 2)) {
+      var needle = edge === "end" ? probe.slice(probe.length - len) : probe.slice(0, len);
+      for (var i = 0; i < lines.length; i++) {
+        var c = cleanText(LINES[lines[i]] || "");
+        var idx = edge === "end" ? c.text.lastIndexOf(needle) : c.text.indexOf(needle);
+        if (idx === -1) continue;
+        if (edge === "end") {
+          return { line: lines[i], ch: c.map[idx + needle.length - 1] + 1 };
+        }
+        return { line: lines[i], ch: c.map[idx] };
+      }
+    }
+    return null;
+  }
+
+  function probeFlat(flat, cleaned, probe, edge) {
+    if (!probe) return null;
+    for (var len = probe.length; len >= 3; len = Math.floor(len / 2)) {
+      var needle = edge === "end" ? probe.slice(probe.length - len) : probe.slice(0, len);
+      var idx = edge === "end" ? cleaned.text.lastIndexOf(needle) : cleaned.text.indexOf(needle);
+      if (idx === -1) continue;
+      var flatIdx = edge === "end"
+        ? cleaned.map[idx + needle.length - 1]
+        : cleaned.map[idx];
+      var p = flat.points[flatIdx];
+      if (!p) continue;
+      return edge === "end"
+        ? { node: p.node, offset: p.offset + 1 }
+        : { node: p.node, offset: p.offset };
+    }
+    return null;
+  }
+
+  function blockForLine(line) {
+    var all = doc.querySelectorAll("[data-line-start]");
+    for (var i = 0; i < all.length; i++) {
+      var a = parseInt(all[i].getAttribute("data-line-start"), 10);
+      var b = parseInt(all[i].getAttribute("data-line-end"), 10);
+      if (!isNaN(a) && line >= a && line < b) return all[i];
+    }
+    return null;
+  }
+
+  /** Preview caret -> {line, ch} in the source. */
+  function sourcePosFromCaret() {
+    if (!focusPoint || !doc.contains(focusPoint.node)) return null;
+    var block = blockAt(focusPoint);
+    if (!block) return null;
+    var start = parseInt(block.getAttribute("data-line-start"), 10);
+    var end = parseInt(block.getAttribute("data-line-end"), 10);
+    if (isNaN(start)) return null;
+
+    var flat = flatten(block);
+    var at = indexOfPoint(flat, focusPoint);
+
+    var lines = [];
+    for (var line = start; line < end && line < LINES.length; line++) lines.push(line);
+
+    // What follows the caret pins it exactly...
+    var ahead = cleanText(flat.text.slice(at, at + 40)).text.trim();
+    var hit = probeLines(lines, ahead, "start");
+    if (hit) return hit;
+
+    // ...and when nothing follows (end of a line or block), what precedes it does.
+    var behind = cleanText(flat.text.slice(Math.max(0, at - 40), at)).text.trim();
+    hit = probeLines(lines, behind, "end");
+    if (hit) return hit;
+
+    return { line: start, ch: 0 };
+  }
+
+  /** {line, ch} -> preview caret point. */
+  function caretFromSourcePos(pos) {
+    var block = blockForLine(pos.line);
+    if (!block) return null;
+    var raw = LINES[pos.line] || "";
+    var flat = flatten(block);
+    var cleaned = cleanText(flat.text);
+
+    var ahead = cleanText(raw.slice(pos.ch)).text.trim();
+    var hit = probeFlat(flat, cleaned, ahead, "start");
+    if (hit) return hit;
+
+    var behind = cleanText(raw.slice(0, pos.ch)).text.trim();
+    hit = probeFlat(flat, cleaned, behind, "end");
+    if (hit) return hit;
+
+    return flat.points[0] || null;
+  }
+
+  // --- flash-style jump inside the editor --------------------------------
+  function edClear() {
+    edMarks.forEach(function (m) { m.clear(); });
+    edMarks = [];
+    edWidgets.forEach(function (w) { if (w.parentNode) w.parentNode.removeChild(w); });
+    edWidgets = [];
+  }
+
+  function edEnd() {
+    edClear();
+    edJumping = false;
+    edQuery = "";
+    edTargets = [];
+    edAnchor = null;
+    updateBadge();
+  }
+
+  function edFindTargets() {
+    var out = [];
+    if (!edQuery) return out;
+
+    var smart = edQuery === edQuery.toLowerCase();
+    var needle = smart ? edQuery.toLowerCase() : edQuery;
+    var info = cm.getScrollInfo();
+    var first = cm.lineAtHeight(info.top, "local");
+    var last = cm.lineAtHeight(info.top + info.clientHeight, "local");
+    var cur = cm.getCursor();
+
+    for (var line = first; line <= last && line < cm.lineCount(); line++) {
+      var raw = cm.getLine(line);
+      if (!raw) continue;
+      var hay = smart ? raw.toLowerCase() : raw;
+      var i = hay.indexOf(needle);
+      while (i !== -1) {
+        out.push({
+          from: { line: line, ch: i },
+          to: { line: line, ch: i + edQuery.length },
+          next: hay.charAt(i + edQuery.length),
+          label: null
+        });
+        i = hay.indexOf(needle, i + 1);
+      }
+    }
+
+    out.sort(function (a, b) {
+      return Math.abs(a.from.line - cur.line) - Math.abs(b.from.line - cur.line);
+    });
+
+    var blocked = {};
+    out.forEach(function (t) { if (t.next) blocked[t.next.toLowerCase()] = true; });
+    var pool = LABELS.split("").filter(function (c) { return !blocked[c]; });
+    out.forEach(function (t, i) { t.label = i < pool.length ? pool[i] : null; });
+
+    return out;
+  }
+
+  function edRender() {
+    edClear();
+    edTargets.forEach(function (t) {
+      edMarks.push(cm.markText(t.from, t.to, { className: "cm-jump-hl" }));
+      if (!t.label) return;
+      var node = document.createElement("div");
+      node.className = "jump-label";
+      node.textContent = t.label;
+      // addWidget parks the node one line below the position; lift it back up
+      // so the label sits immediately right of the last matched character.
+      cm.addWidget(t.to, node, false);
+      var top = parseFloat(node.style.top);
+      if (!isNaN(top)) node.style.top = (top - cm.defaultTextHeight()) + "px";
+      edWidgets.push(node);
+    });
+  }
+
+  function edRefresh() {
+    edTargets = edFindTargets();
+    edRender();
+    updateBadge();
+  }
+
+  function edStart() {
+    edJumping = true;
+    edQuery = "";
+    edTargets = [];
+    // Starting from visual mode means the jump extends the selection.
+    edAnchor = vimMode.indexOf("visual") === 0 ? cm.getCursor("anchor") : null;
+    updateBadge();
+  }
+
+  function edJumpTo(t) {
+    var anchor = edAnchor;
+    var to = t.from;
+    edEnd();
+    if (anchor) cm.setSelection(anchor, to);
+    else cm.setCursor(to);
+    cm.scrollIntoView(to, 60);
+  }
+
+  function edJumpKey(e) {
+    var k = e.key;
+
+    if (k === "Escape") { edEnd(); return; }
+    if (k === "Backspace") {
+      edQuery = edQuery.slice(0, -1);
+      if (!edQuery) { edClear(); edTargets = []; updateBadge(); }
+      else edRefresh();
+      return;
+    }
+    if (k === "Enter") {
+      if (edTargets.length) edJumpTo(edTargets[0]);
+      return;
+    }
+    if (k.length !== 1) return;
+
+    for (var i = 0; i < edTargets.length; i++) {
+      if (edTargets[i].label === k) { edJumpTo(edTargets[i]); return; }
+    }
+
+    edQuery += k;
+    edRefresh();
+    if (edTargets.length === 1) edJumpTo(edTargets[0]);
+  }
+
   window.setView = function (next) {
     if (next === view) return;
     view = next;
 
     if (view === "edit") {
+      var pos = sourcePosFromCaret();
       ensureEditor();
       if (cm.getValue() !== SRC) cm.setValue(SRC);
       document.body.classList.add("editing");
@@ -791,12 +1094,27 @@
       endJump();
       caretEl.style.display = "none";
       cm.refresh();
+      if (pos) {
+        cm.setCursor(pos);
+        cm.scrollIntoView(pos, 80);
+      }
       cm.focus();
     } else {
       flushBuffer();
+      var cursor = cm ? cm.getCursor() : null;
+      if (cm) edEnd();
       document.body.classList.remove("editing");
       if (previewStale) renderPreview();
       resetVim();
+      if (cursor) {
+        var point = caretFromSourcePos(cursor);
+        if (point) {
+          focusPoint = point;
+          mark(function () { collapseAt(point); });
+          revealCaret();
+          drawCaret();
+        }
+      }
     }
     updateBadge();
   };
@@ -1099,6 +1417,12 @@
     matches = [];
     matchIndex = -1;
     query = "";
+    // A visual selection made before a view switch would otherwise linger,
+    // since the preview only re-renders when the buffer actually changed.
+    mark(function () {
+      var s = sel();
+      if (s) s.removeAllRanges();
+    });
     caretEl.style.display = "none";
     badge.classList.remove("on");
     closeSearch();

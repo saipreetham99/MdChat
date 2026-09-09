@@ -1,7 +1,8 @@
 # MdChat
 
-Native macOS Markdown previewer with a Gemini chat panel that answers questions
-about whatever part of the document you pick.
+Native macOS Markdown previewer and vim-keyed editor, with a Gemini chat panel
+that answers questions about whatever part of the document you pick — and can
+rewrite it in place, behind a diff you approve.
 
 ## Requirements
 
@@ -76,30 +77,6 @@ silently. The choice is stored in `UserDefaults`, so it survives restarts.
 If the panel says to add a key, you skipped ⌘,. If a reply never arrives, check
 the model ID first — that's the usual culprit.
 
-## Troubleshooting
-
-**`vendor/ is empty — run ./fetch-deps.sh first`** — exactly what it says. This
-guard exists because a build without the JS produces an app that launches to a
-blank pane.
-
-**`'someSymbol' is only available in macOS 14.0 or newer`** — you're on macOS
-13 and something crept in above the floor. Either replace the symbol or raise
-the floor in both `Package.swift` (`.macOS(.v14)`) and `Info.plist`
-(`LSMinimumSystemVersion`).
-
-**Preview renders but the editor is blank on ⌘E** — CodeMirror didn't load.
-Re-run `./fetch-deps.sh` and confirm seven `cm-*.js` / `codemirror.*` files are
-in `Sources/MdChat/Resources/vendor/`.
-
-**`/` does nothing in the editor** — `cm-searchcursor.js` is missing; the vim
-keymap needs it for search. Re-run `./fetch-deps.sh`.
-
-**Nothing happens on ⌘S** — no file is open, or the app can't write there.
-Errors surface in the chat panel in red.
-
-**Vim keys type nothing in the preview** — the web view isn't focused. Click it,
-or press ⌘J twice, or Escape out of the chat composer.
-
 ## Shortcuts
 
 | Key | Action |
@@ -112,23 +89,55 @@ or press ⌘J twice, or Escape out of the chat composer.
 | ↩ | Send the chat message (⇧↩ for a newline) |
 | ⌘⇧R | Rewrite the selection (ask for an edit) |
 | ⌘⌥↩ | Apply the pending rewrite |
+| ⌘Z | Undo an applied rewrite (in edit view) |
 | ⌘⇧N | New conversation (also stops a stream) |
 | ⌘R | Reload from disk, discarding edits |
 | ⌘⇧D | Cycle appearance: system, light, dark |
 | ⌘, | API key and model |
 
+## Troubleshooting
+
+**`vendor/ is empty — run ./fetch-deps.sh first`** — exactly what it says. This
+guard exists because a build without the JS produces an app that launches to a
+blank pane.
+
+**`'someSymbol' is only available in macOS 14.0 or newer`** — you're on macOS
+13 and something crept in above the floor. Either replace the symbol or raise
+the floor in both `Package.swift` (`.macOS(.v14)`) and `Info.plist`
+(`LSMinimumSystemVersion`).
+
+**Preview renders but the editor is blank on ⌘E** — CodeMirror didn't load.
+Re-run `./fetch-deps.sh` and confirm ten files are in
+`Sources/MdChat/Resources/vendor/`: `markdown-it.min.js`, `mermaid.min.js`,
+`codemirror.js`, `codemirror.css`, `cm-xml.js`, `cm-markdown.js`,
+`cm-dialog.js`, `cm-dialog.css`, `cm-searchcursor.js`, `cm-vim.js`.
+
+**`/` does nothing in the editor** — `cm-searchcursor.js` is missing; the vim
+keymap needs it for search. Re-run `./fetch-deps.sh`.
+
+**Nothing happens on ⌘S** — no file is open, or the app can't write there.
+Errors surface in the chat panel in red.
+
+**Vim keys type nothing in the preview** — the web view isn't focused. Click it,
+or press ⌘J twice, or Escape out of the chat composer.
+
 ## How context selection works
 
 `markdown-it` tokens carry a `map` of source line ranges. A core rule copies
 that onto every top-level element as `data-line-start` / `data-line-end`, so the
-DOM is a lookup table back into the raw file. Three ways to grab context:
+DOM is a lookup table back into the raw file. Ways to grab context:
 
 - **Hover a block** → the `Ask` button slices those source lines.
 - **Hover a heading** → `Whole section` walks forward to the next heading of the
   same or higher rank and slices everything between.
-- **Select text** → sends the selection verbatim.
+- **Select text** → sends the full lines the selection touches.
 - **Vim motions** → move the cursor, select with `v`/`V`, then ⌘↩.
 - **⌘J with a selection** → opening the chat carries the selection in.
+- **In the editor** → a visual selection, or the paragraph at the cursor.
+
+Every one of these resolves to a line range, not a loose quote, which is what
+makes a reply applicable as a patch. A mid-sentence selection therefore sends
+the whole lines it touches.
 
 ⌘J only takes a real selection. ⌘↩ is the one that falls back to the block at
 the cursor when nothing is selected, so opening the panel to ask a plain question
@@ -223,8 +232,9 @@ excerpt sent to the model is those exact lines. Partial-line replacement is
 where a bad patch corrupts markup, so it isn't possible.
 
 **Patches go through CodeMirror**, creating the editor hidden if you're in
-preview. That means ⌘Z undoes an applied rewrite with no undo stack of my own,
-and the preview re-renders from the buffer as usual.
+preview. So an applied rewrite is undoable with ⌘Z — but CodeMirror only has the
+keyboard in edit view, so ⌘E first, then ⌘Z. The preview re-renders from the
+buffer either way.
 
 **A patch is verified before it lands.** The anchor stores the original text
 alongside its line range. On apply, if those lines still match, it writes there.
@@ -299,11 +309,9 @@ re-renders.
 
 ## Known limits
 
-- Replies stream over SSE. The send button becomes a stop button while tokens
-  are arriving; stopping keeps whatever text already landed.
-- Only the newest turns that fit a 24k-character budget are sent (see below).
-  Older ones stay in the transcript but leave the model's context.
+- Only the newest turns that fit a 24k-character budget are sent (see Replies
+  and history). Older ones stay in the transcript but leave the model's context.
+- Context is line-snapped, so selecting half a sentence sends its whole line.
+  Deliberate: partial-line patches are what corrupt markup.
 - A rewrite's diff is line-level, so a one-word change shows as a whole line
   replaced. Word-level intra-line diffing isn't implemented.
-- Unsandboxed and ad-hoc signed — it's a local tool. Add entitlements and a real
-  signing identity if you want to distribute it.

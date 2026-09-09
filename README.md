@@ -107,7 +107,7 @@ or press ⌘J twice, or Escape out of the chat composer.
 | ⌘O | Open a `.md` file |
 | ⌘E | Toggle edit / preview |
 | ⌘S | Save (`:w` also works) |
-| ⌘J | Toggle chat panel |
+| ⌘J | Toggle chat panel; brings any selection in as context |
 | ⌘↩ | Send selection (or the block at the cursor) as context |
 | ↩ | Send the chat message (⇧↩ for a newline) |
 | ⌘⇧N | New conversation (also stops a stream) |
@@ -126,6 +126,11 @@ DOM is a lookup table back into the raw file. Three ways to grab context:
   same or higher rank and slices everything between.
 - **Select text** → sends the selection verbatim.
 - **Vim motions** → move the cursor, select with `v`/`V`, then ⌘↩.
+- **⌘J with a selection** → opening the chat carries the selection in.
+
+⌘J only takes a real selection. ⌘↩ is the one that falls back to the block at
+the cursor when nothing is selected, so opening the panel to ask a plain question
+doesn't quietly attach a paragraph you didn't pick.
 
 Because slices come from the source rather than `textContent`, code blocks and
 Mermaid diagrams arrive as their original fenced source, which is what the model
@@ -200,6 +205,29 @@ rename that the watcher notices, and the reload that follows compares text and
 no-ops. If the file changes on disk while your buffer is dirty, the reload backs
 off and says so rather than eating your edits — ⌘R forces it.
 
+## Replies and history
+
+Replies render as blocks, not one attributed string: `MarkdownText.swift` splits
+the text into headings, paragraphs, lists, quotes, rules and fences, then lays
+each out natively. Fenced code gets a monospaced block with a language label and
+a copy button; inline code gets a monospaced run, which SwiftUI won't do on its
+own from `AttributedString`.
+
+Two details matter for streaming. Block ids are positional rather than UUIDs, so
+SwiftUI reuses views instead of rebuilding the whole reply on every token. And an
+unterminated fence is treated as code through to the end of the text, because
+mid-stream that's the normal state — otherwise a code block would render as
+prose until its closing fence arrived.
+
+History is budgeted instead of resent whole. Each request walks the transcript
+newest-first, keeping entire turns until 24k characters are used, then drops the
+rest; the current question always goes regardless of how large its excerpt is.
+The window is trimmed to start on a user turn, since the API expects that. When
+anything was dropped, a thin `older messages dropped from context` marker appears
+in the transcript at the cut, so a model that suddenly can't recall something
+earlier is explainable rather than mysterious. Tune `historyBudget` in
+`AppState.swift`.
+
 ## Layout
 
 ```
@@ -212,6 +240,7 @@ Gemini.swift       streamGenerateContent SSE, no SDK
 Keychain.swift     ~40 lines around SecItem*
 Appearance.swift   light/dark/system enum
 Prompt.swift       the system prompt, tune it here
+MarkdownText.swift block-level renderer for replies
 Resources/preview.html  render + line mapping + pickers + vim layer + editor
 ```
 
@@ -230,7 +259,5 @@ re-renders.
 
 - Replies stream over SSE. The send button becomes a stop button while tokens
   are arriving; stopping keeps whatever text already landed.
-- Model replies render with `AttributedString(markdown:)`, which handles inline
-  formatting but not fenced code blocks in the reply.
-- The whole conversation is resent each turn. Fine for a document Q&A session;
-  ⌘⇧N when it gets long.
+- Only the newest turns that fit a 24k-character budget are sent (see below).
+  Older ones stay in the transcript but leave the model's context.

@@ -32,6 +32,9 @@ struct ChatPanel: View {
                             .padding(.top, 8)
                     }
                     ForEach(state.messages) { msg in
+                        if msg.id == state.oldestSent {
+                            TrimMarker()
+                        }
                         MessageRow(message: msg).id(msg.id)
                     }
                     if state.isSending, state.messages.last?.text.isEmpty ?? true {
@@ -121,19 +124,30 @@ private struct MessageRow: View {
                                 in: RoundedRectangle(cornerRadius: 6))
             }
 
-            Text(rendered)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            if message.role == .model {
+                MarkdownText(message.text)
+            } else {
+                Text(message.text)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    /// Model replies come back as Markdown; render the inline subset SwiftUI supports.
-    private var rendered: AttributedString {
-        (try? AttributedString(
-            markdown: message.text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(message.text)
+/// Sits above the oldest message still being sent to the model.
+private struct TrimMarker: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Divider()
+            Text("older messages dropped from context")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            Divider()
+        }
+        .frame(height: 12)
     }
 }
 

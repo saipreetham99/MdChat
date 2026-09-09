@@ -26,6 +26,12 @@ final class AppState: ObservableObject {
     @Published var composerFocusToken = 0
     @Published var editing = false
     @Published var isDirty = false
+    /// First message still inside the context window; earlier ones aren't sent.
+    @Published var oldestSent: UUID?
+
+    /// Characters of history per request, roughly 6k tokens. Excerpts are the
+    /// bulky part, so this is a cap on them more than on the prose.
+    private let historyBudget = 24_000
 
     @Published var modelID: String {
         didSet { UserDefaults.standard.set(modelID, forKey: "modelID") }
@@ -129,6 +135,9 @@ final class AppState: ObservableObject {
     func toggleChat() {
         withAnimation(.easeOut(duration: 0.18)) { chatVisible.toggle() }
         if chatVisible {
+            // Anything selected comes along, so selecting and opening the panel
+            // is one step instead of two.
+            PreviewBridge.shared.captureSelectionOnly()
             composerFocusToken += 1
         } else {
             PreviewBridge.shared.focusPreview()
@@ -162,13 +171,7 @@ final class AppState: ObservableObject {
         errorText = nil
 
         // Build the turns before the placeholder goes in; an empty model turn is rejected.
-        let turns = messages.map { msg -> Gemini.Turn in
-            var text = msg.text
-            if msg.role == .user, let ctx = msg.context {
-                text = "From the document I'm reading:\n\n\(ctx)\n\n---\n\n\(msg.text)"
-            }
-            return Gemini.Turn(role: msg.role.rawValue, text: text)
-        }
+        let turns = contextWindow()
 
         let placeholder = ChatMessage(role: .model, text: "")
         let id = placeholder.id
@@ -201,6 +204,32 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Newest-first walk that keeps whole turns until the budget runs out. The
+    /// current question always goes, however big its excerpt.
+    private func contextWindow() -> [Gemini.Turn] {
+        var kept: [ChatMessage] = []
+        var used = 0
+
+        for msg in messages.reversed() {
+            let wire = onTheWire(msg)
+            if !kept.isEmpty, used + wire.count > historyBudget { break }
+            kept.append(msg)
+            used += wire.count
+        }
+
+        var ordered = Array(kept.reversed())
+        // The API wants the conversation to open on a user turn.
+        while ordered.first?.role == .model { ordered.removeFirst() }
+
+        oldestSent = ordered.count < messages.count ? ordered.first?.id : nil
+        return ordered.map { Gemini.Turn(role: $0.role.rawValue, text: onTheWire($0)) }
+    }
+
+    private func onTheWire(_ msg: ChatMessage) -> String {
+        guard msg.role == .user, let ctx = msg.context else { return msg.text }
+        return "From the document I'm reading:\n\n\(ctx)\n\n---\n\n\(msg.text)"
+    }
+
     func stop() {
         streamTask?.cancel()
         streamTask = nil
@@ -210,6 +239,7 @@ final class AppState: ObservableObject {
     func newConversation() {
         stop()
         messages.removeAll()
+        oldestSent = nil
         errorText = nil
     }
 

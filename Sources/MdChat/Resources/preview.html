@@ -455,6 +455,21 @@
     selPicker.classList.remove("on");
   });
 
+  // ⌘J opens the chat: carry a selection over, but never fall back to a block.
+  // Opening the panel to type a plain question shouldn't attach anything.
+  window.captureSelectionOnly = function () {
+    if (view === "edit" && cm) {
+      var selected = cm.getSelection();
+      if (selected && selected.trim()) sendContext(selected);
+      return;
+    }
+    var text = selectionText();
+    if (!text) return;
+    sendContext(text);
+    selPicker.classList.remove("on");
+    if (mode !== "normal") setMode("normal");
+  };
+
   // Called from the ⌘↩ menu command.
   window.captureSelection = function () {
     if (view === "edit" && cm) {

@@ -11,6 +11,10 @@ final class PreviewBridge {
         webView?.evaluateJavaScript("window.captureSelection && window.captureSelection()")
     }
 
+    func captureSelectionOnly() {
+        webView?.evaluateJavaScript("window.captureSelectionOnly && window.captureSelectionOnly()")
+    }
+
     /// Vim keys only arrive when the web view is first responder.
     func focusPreview() {
         guard let web = webView else { return }

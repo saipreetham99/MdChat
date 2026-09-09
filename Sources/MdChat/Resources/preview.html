@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="color-scheme" content="light dark">
 <title>Preview</title>
+<link rel="stylesheet" href="vendor/codemirror.css">
+<link rel="stylesheet" href="vendor/cm-dialog.css">
 <style>
   :root {
     --bg: #ffffff;
@@ -140,6 +142,53 @@
     padding: 0;
   }
 
+  /* editor */
+  body.editing { padding: 0; }
+  #editor { display: none; }
+  body.editing #editor { display: block; }
+  body.editing #doc { display: none; }
+
+  .CodeMirror {
+    height: 100vh;
+    font: 13px/1.65 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  .CodeMirror-gutters { background: var(--bg); border-right: 1px solid var(--rule); }
+  .CodeMirror-linenumber { color: var(--muted); }
+  .CodeMirror-cursor { border-left: 2px solid var(--accent); }
+  .cm-fat-cursor .CodeMirror-cursor,
+  .CodeMirror-cursor.CodeMirror-overwrite { background: var(--accent); opacity: .55; }
+  .CodeMirror-selected { background: var(--rule); }
+  .CodeMirror-focused .CodeMirror-selected { background: var(--accent); opacity: .3; }
+  .CodeMirror-activeline-background { background: var(--code-bg); }
+  .CodeMirror-matchingbracket { color: var(--accent) !important; font-weight: 600; }
+
+  .cm-s-default .cm-header { color: var(--accent); font-weight: 600; }
+  .cm-s-default .cm-quote { color: var(--muted); }
+  .cm-s-default .cm-link { color: var(--accent); }
+  .cm-s-default .cm-url { color: var(--muted); }
+  .cm-s-default .cm-comment { color: var(--muted); }
+  .cm-s-default .cm-string { color: var(--accent); }
+  .cm-s-default .cm-variable-2, .cm-s-default .cm-variable-3 { color: var(--fg); }
+  .cm-s-default .cm-keyword { color: var(--accent); }
+  .cm-strong { font-weight: 700; }
+  .cm-em { font-style: italic; }
+
+  .CodeMirror-dialog {
+    background: var(--pick-bg);
+    color: var(--fg);
+    border-bottom: 1px solid var(--rule);
+    font: 12px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .CodeMirror-dialog input {
+    font: inherit;
+    color: var(--fg);
+    background: none;
+    border: 0;
+    outline: none;
+  }
+
   /* flash-style jump overlay */
   #jumpLayer {
     position: absolute;
@@ -177,6 +226,7 @@
 </head>
 <body>
   <div id="doc"></div>
+  <div id="editor"></div>
 
   <div class="picker" id="hoverPicker">
     <button data-act="block">Ask</button>
@@ -193,6 +243,11 @@
 
 <script src="vendor/markdown-it.min.js"></script>
 <script src="vendor/mermaid.min.js"></script>
+<script src="vendor/codemirror.js"></script>
+<script src="vendor/cm-xml.js"></script>
+<script src="vendor/cm-markdown.js"></script>
+<script src="vendor/cm-dialog.js"></script>
+<script src="vendor/cm-vim.js"></script>
 <script>
 (function () {
   "use strict";
@@ -206,11 +261,14 @@
   var hoverTarget = null;
   var dark = window.matchMedia("(prefers-color-scheme: dark)");
 
-  function post(text) {
-    if (!text) return;
+  function post(kind, text) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridge) {
-      window.webkit.messageHandlers.bridge.postMessage({ text: text });
+      window.webkit.messageHandlers.bridge.postMessage({ kind: kind, text: text || "" });
     }
+  }
+
+  function sendContext(text) {
+    if (text && text.trim()) post("context", text);
   }
 
   // --- markdown-it with source line mapping ------------------------------
@@ -254,9 +312,7 @@
     render(SRC);
   });
 
-  window.render = function (text) {
-    SRC = text || "";
-    LINES = SRC.split("\n");
+  function renderPreview() {
     hidePickers();
     var y = window.scrollY;
     doc.innerHTML = md.render(SRC);
@@ -267,7 +323,21 @@
         console.warn("mermaid:", e);
       });
     }
+    previewStale = false;
     resetVim();
+  }
+
+  // Called from Swift whenever the document text changes on its side.
+  window.render = function (text) {
+    SRC = text || "";
+    LINES = SRC.split("\n");
+    if (cm && cm.getValue() !== SRC) {
+      var cursor = cm.getCursor();
+      cm.setValue(SRC);
+      cm.setCursor(cursor);
+    }
+    if (view === "edit") { previewStale = true; return; }
+    renderPreview();
   };
 
   // --- source slicing ----------------------------------------------------
@@ -331,6 +401,7 @@
     queued = true;
     requestAnimationFrame(function () {
       queued = false;
+      if (view === "edit") return;
       if (e.target.closest && e.target.closest(".picker")) return;
       var block = e.target.closest ? e.target.closest("#doc [data-line-start]") : null;
       if (!block) {
@@ -349,7 +420,7 @@
   hoverPicker.addEventListener("click", function (e) {
     var act = e.target.getAttribute("data-act");
     if (!act || !hoverTarget) return;
-    post(act === "section" ? sectionSource(hoverTarget) : blockSource(hoverTarget));
+    sendContext(act === "section" ? sectionSource(hoverTarget) : blockSource(hoverTarget));
     flash(hoverTarget);
     hoverPicker.classList.remove("on");
   });
@@ -364,6 +435,7 @@
   }
 
   document.addEventListener("selectionchange", function () {
+    if (view === "edit") { selPicker.classList.remove("on"); return; }
     if (mode !== "normal" || programmatic) { selPicker.classList.remove("on"); return; }
     var text = selectionText();
     if (!text) { selPicker.classList.remove("on"); return; }
@@ -374,22 +446,26 @@
 
   selPicker.addEventListener("mousedown", function (e) { e.preventDefault(); });
   selPicker.addEventListener("click", function () {
-    var text = selectionText();
-    if (text) post(text);
+    sendContext(selectionText());
     selPicker.classList.remove("on");
   });
 
   // Called from the ⌘↩ menu command.
   window.captureSelection = function () {
+    if (view === "edit" && cm) {
+      var selected = cm.getSelection();
+      sendContext(selected && selected.trim() ? selected : blockAroundCursor());
+      return;
+    }
     var text = selectionText();
     if (text) {
-      post(text);
+      sendContext(text);
       selPicker.classList.remove("on");
       if (mode !== "normal") setMode("normal");
       return;
     }
     var block = focusPoint && doc.contains(focusPoint.node) ? blockAt(focusPoint) : hoverTarget;
-    if (block) { post(blockSource(block)); flash(block); }
+    if (block) { sendContext(blockSource(block)); flash(block); }
   };
 
   // ===================== vim motions =====================================
@@ -407,10 +483,16 @@
   var matchIndex = -1;
   var query = "";
 
+  var view = "preview";        // preview | edit
+  var cm = null;
+  var previewStale = false;
+  var bufferTimer = null;
+
   var jumpLayer = document.getElementById("jumpLayer");
   var jumping = false;
   var jumpQuery = "";
   var jumpTargets = [];
+  var vimMode = "normal";
   // Home-row first, and no characters that commonly follow a match.
   var LABELS = "jfkdlshgurnvieowmbcxztpqay";
 
@@ -535,6 +617,11 @@
 
   function updateBadge() {
     var bits = [];
+    if (view === "edit") {
+      bits.push("<b>" + escHtml(vimMode.toUpperCase()) + "</b>");
+      if (bits.length) { badge.innerHTML = bits.join("   "); badge.classList.add("on"); }
+      return;
+    }
     if (jumping) bits.push("<b>JUMP</b> " + escHtml(jumpQuery));
     if (mode === "visual") bits.push("<b>VISUAL</b>");
     else if (mode === "vline") bits.push("<b>V-LINE</b>");
@@ -622,6 +709,102 @@
     window.scrollTo(0, document.body.scrollHeight);
     settle();
   }
+
+  // --- editor (CodeMirror 5 + vim keymap) --------------------------------
+  function scheduleBufferPost() {
+    if (bufferTimer) clearTimeout(bufferTimer);
+    bufferTimer = setTimeout(function () {
+      bufferTimer = null;
+      SRC = cm.getValue();
+      LINES = SRC.split("\n");
+      previewStale = true;
+      post("buffer", SRC);
+    }, 250);
+  }
+
+  function flushBuffer() {
+    if (!cm) return;
+    if (bufferTimer) { clearTimeout(bufferTimer); bufferTimer = null; }
+    SRC = cm.getValue();
+    LINES = SRC.split("\n");
+  }
+
+  function ensureEditor() {
+    if (cm) return cm;
+
+    cm = CodeMirror(document.getElementById("editor"), {
+      value: SRC,
+      mode: "markdown",
+      keyMap: "vim",
+      lineNumbers: true,
+      lineWrapping: true,
+      indentUnit: 2,
+      tabSize: 2,
+      viewportMargin: 40
+    });
+
+    cm.on("change", scheduleBufferPost);
+
+    // :w and :wq go through the app so the file write stays in Swift.
+    CodeMirror.Vim.defineEx("write", "w", function () {
+      flushBuffer();
+      post("save", SRC);
+    });
+    CodeMirror.Vim.defineEx("wq", "wq", function () {
+      flushBuffer();
+      post("save", SRC);
+      window.setView("preview");
+    });
+    CodeMirror.Vim.defineEx("preview", "prev", function () {
+      window.setView("preview");
+    });
+
+    cm.on("vim-mode-change", function (e) {
+      vimMode = e.mode + (e.subMode ? " " + e.subMode : "");
+      updateBadge();
+    });
+
+    return cm;
+  }
+
+  /** The current line plus its contiguous non-blank neighbours. */
+  function blockAroundCursor() {
+    var line = cm.getCursor().line;
+    if (!cm.getLine(line) || !cm.getLine(line).trim()) return cm.getLine(line) || "";
+    var top = line, bottom = line;
+    while (top > 0 && cm.getLine(top - 1) && cm.getLine(top - 1).trim()) top--;
+    while (bottom < cm.lineCount() - 1 && cm.getLine(bottom + 1) && cm.getLine(bottom + 1).trim()) bottom++;
+    var out = [];
+    for (var i = top; i <= bottom; i++) out.push(cm.getLine(i));
+    return out.join("\n");
+  }
+
+  window.setView = function (next) {
+    if (next === view) return;
+    view = next;
+
+    if (view === "edit") {
+      ensureEditor();
+      if (cm.getValue() !== SRC) cm.setValue(SRC);
+      document.body.classList.add("editing");
+      hidePickers();
+      endJump();
+      caretEl.style.display = "none";
+      cm.refresh();
+      cm.focus();
+    } else {
+      flushBuffer();
+      document.body.classList.remove("editing");
+      if (previewStale) renderPreview();
+      resetVim();
+    }
+    updateBadge();
+  };
+
+  window.currentBuffer = function () {
+    flushBuffer();
+    return SRC;
+  };
 
   // --- flash-style jump --------------------------------------------------
   /** Only what's on screen can be labelled, which keeps the label set small. */
@@ -859,6 +1042,7 @@
   };
 
   document.addEventListener("keydown", function (e) {
+    if (view === "edit") return;            // CodeMirror's vim owns the keyboard
     if (document.activeElement === searchInput) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;   // ⌘↩ is handled by the app menu
 
@@ -898,6 +1082,7 @@
 
   // Clicking should move the vim cursor too, so mouse and keyboard agree.
   document.addEventListener("mouseup", function () {
+    if (view === "edit") return;
     var p = pointFromSelection();
     if (!p || !doc.contains(p.node)) return;
     focusPoint = p;

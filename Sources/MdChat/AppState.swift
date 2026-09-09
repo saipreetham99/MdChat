@@ -24,6 +24,8 @@ final class AppState: ObservableObject {
     @Published var showSettings = false
     /// Bumped to pull keyboard focus into the composer.
     @Published var composerFocusToken = 0
+    @Published var editing = false
+    @Published var isDirty = false
 
     @Published var modelID: String {
         didSet { UserDefaults.standard.set(modelID, forKey: "modelID") }
@@ -61,19 +63,64 @@ final class AppState: ObservableObject {
 
     func open(url: URL) {
         watcher = nil
+        isDirty = false
         fileURL = url
-        reload()
+        reload(force: true)
         watcher = FileWatcher(url: url) { [weak self] in
             self?.reload()
         }
     }
 
-    func reload() {
+    /// `force` is the ⌘R path: it discards unsaved edits on purpose.
+    func reload(force: Bool = false) {
         guard let url = fileURL else { return }
         do {
-            markdown = try String(contentsOf: url, encoding: .utf8)
+            let text = try String(contentsOf: url, encoding: .utf8)
+            if text == markdown {
+                isDirty = false
+                return
+            }
+            if isDirty && !force {
+                errorText = "\(url.lastPathComponent) changed on disk. ⌘R reloads and discards your edits."
+                return
+            }
+            markdown = text
+            isDirty = false
+            errorText = nil
         } catch {
             errorText = "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Editing
+
+    func toggleEditing() {
+        editing.toggle()
+        PreviewBridge.shared.focusPreview()
+        PreviewBridge.shared.setView(editing ? "edit" : "preview")
+    }
+
+    func bufferChanged(_ text: String) {
+        markdown = text
+        isDirty = true
+    }
+
+    func save() {
+        guard let url = fileURL else {
+            errorText = "Nothing open to save. ⌘O first."
+            return
+        }
+        Task {
+            guard let text = await PreviewBridge.shared.readBuffer() else { return }
+            do {
+                // Atomic write; the watcher sees the rename and re-arms itself.
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                markdown = text
+                isDirty = false
+                errorText = nil
+            } catch {
+                errorText = "Save failed: \(error.localizedDescription)"
+            }
         }
     }
 

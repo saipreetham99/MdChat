@@ -13,7 +13,8 @@ open MdChat.app
 ```
 
 Needs Xcode command line tools (Swift 5.9+) and macOS 13+. No Xcode project, no
-package dependencies — just SwiftPM and two vendored JS files.
+SwiftPM dependencies — just vendored JS: markdown-it, Mermaid, and CodeMirror 5
+with its vim keymap.
 
 First run: press ⌘, and paste your Gemini API key. It goes into the login
 Keychain, not a plist. The model ID is a free text field, so set it to whatever
@@ -24,11 +25,13 @@ string the API currently expects for the Flash model you want.
 | Key | Action |
 | --- | --- |
 | ⌘O | Open a `.md` file |
+| ⌘E | Toggle edit / preview |
+| ⌘S | Save (`:w` also works) |
 | ⌘J | Toggle chat panel |
 | ⌘↩ | Send selection (or the block at the cursor) as context |
 | ↩ | Send the chat message (⇧↩ for a newline) |
 | ⌘⇧N | New conversation (also stops a stream) |
-| ⌘R | Reload from disk |
+| ⌘R | Reload from disk, discarding edits |
 | ⌘⇧D | Cycle appearance: system, light, dark |
 | ⌘, | API key and model |
 
@@ -82,6 +85,28 @@ as vim without `gj`. Two consequences worth knowing: `e` behaves like `w` becaus
 WebKit has no word-end granularity, and count prefixes (`3j`) aren't wired up.
 Clicking moves the cursor too, so mouse and keyboard stay in agreement.
 
+## Editing
+
+⌘E switches between preview and editor; the toolbar shows a pencil or an eye,
+and a dot appears next to the filename when the buffer is dirty. ⌘S writes the
+file, and `:w`, `:wq`, and `:prev` are wired to the same path.
+
+The editor is CodeMirror 5 with its `keymap/vim`, so you get the real thing:
+insert, replace, visual and visual-line modes, counts, text objects (`ciw`),
+`dd`, registers, macros, `/` search with the dialog addon. The mode shows in the
+same bottom-right badge the preview uses. ⌘↩ sends the visual selection as
+context, or the paragraph around the cursor if nothing is selected.
+
+Both views share one `WKWebView` and one buffer. The preview's own vim layer
+stands down whenever the editor is showing, so the two keymaps never both see a
+keystroke. Preview re-rendering is skipped while you type and runs on the way
+back, which keeps Mermaid off the hot path.
+
+Saving and watching interact carefully: the write is atomic, so it lands as a
+rename that the watcher notices, and the reload that follows compares text and
+no-ops. If the file changes on disk while your buffer is dirty, the reload backs
+off and says so rather than eating your edits — ⌘R forces it.
+
 ## Layout
 
 ```
@@ -94,7 +119,7 @@ Gemini.swift       streamGenerateContent SSE, no SDK
 Keychain.swift     ~40 lines around SecItem*
 Appearance.swift   light/dark/system enum
 Prompt.swift       the system prompt, tune it here
-Resources/preview.html  render + line mapping + pickers + vim layer
+Resources/preview.html  render + line mapping + pickers + vim layer + editor
 ```
 
 Appearance is set on `NSApplication.shared`, which covers the SwiftUI chrome and

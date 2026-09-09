@@ -24,12 +24,20 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("Open Markdown File…") { openFile() }
                 .keyboardShortcut("o", modifiers: .command)
-            Button("Reload From Disk") { state.reload() }
+            Button("Save") { state.save() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(state.fileURL == nil)
+            Button("Reload From Disk") { state.reload(force: true) }
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(state.fileURL == nil)
         }
 
         CommandGroup(after: .toolbar) {
+            Button(state.editing ? "Preview" : "Edit") { state.toggleEditing() }
+                .keyboardShortcut("e", modifiers: .command)
+
+            Divider()
+
             Picker("Appearance", selection: $state.appearance) {
                 ForEach(Appearance.allCases) { option in
                     Text(option.label).tag(option)

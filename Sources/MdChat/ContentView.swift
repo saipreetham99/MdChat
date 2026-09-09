@@ -6,8 +6,13 @@ struct ContentView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            PreviewView(markdown: state.markdown) { text in
-                state.attach(context: text)
+            PreviewView(markdown: state.markdown) { kind, text in
+                switch kind {
+                case "context": state.attach(context: text)
+                case "buffer":  state.bufferChanged(text)
+                case "save":    state.save()
+                default:        break
+                }
             }
             .frame(minWidth: 320)
 
@@ -20,8 +25,17 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                Text(state.fileURL?.lastPathComponent ?? "No file open")
+                Text((state.fileURL?.lastPathComponent ?? "No file open")
+                     + (state.isDirty ? " •" : ""))
                     .foregroundStyle(.secondary)
+            }
+            ToolbarItem {
+                Button {
+                    state.toggleEditing()
+                } label: {
+                    Image(systemName: state.editing ? "eye" : "pencil")
+                }
+                .help(state.editing ? "Preview (⌘E)" : "Edit (⌘E)")
             }
             ToolbarItem {
                 Menu {

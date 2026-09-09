@@ -1,17 +1,30 @@
 #!/bin/sh
-# Vendors the two JS libraries the preview needs. Pinned; run once.
+# Vendors the JS the preview and editor need. Pinned; run once.
 set -eu
 
 DIR="Sources/MdChat/Resources/vendor"
 MARKDOWN_IT="14.1.0"
 MERMAID="10.9.3"
+CODEMIRROR="5.65.16"
 
 mkdir -p "$DIR"
 
-curl -fsSL -o "$DIR/markdown-it.min.js" \
-  "https://cdn.jsdelivr.net/npm/markdown-it@${MARKDOWN_IT}/dist/markdown-it.min.js"
+get() {
+  curl -fsSL -o "$DIR/$2" "$1"
+}
 
-curl -fsSL -o "$DIR/mermaid.min.js" \
-  "https://cdn.jsdelivr.net/npm/mermaid@${MERMAID}/dist/mermaid.min.js"
+get "https://cdn.jsdelivr.net/npm/markdown-it@${MARKDOWN_IT}/dist/markdown-it.min.js" markdown-it.min.js
+get "https://cdn.jsdelivr.net/npm/mermaid@${MERMAID}/dist/mermaid.min.js" mermaid.min.js
 
-printf 'markdown-it %s, mermaid %s -> %s\n' "$MARKDOWN_IT" "$MERMAID" "$DIR"
+# CodeMirror 5 + vim keymap: classic scripts, no bundler needed.
+CM="https://cdn.jsdelivr.net/npm/codemirror@${CODEMIRROR}"
+get "$CM/lib/codemirror.js"            codemirror.js
+get "$CM/lib/codemirror.css"           codemirror.css
+get "$CM/mode/xml/xml.js"              cm-xml.js
+get "$CM/mode/markdown/markdown.js"    cm-markdown.js
+get "$CM/addon/dialog/dialog.js"       cm-dialog.js
+get "$CM/addon/dialog/dialog.css"      cm-dialog.css
+get "$CM/keymap/vim.js"                cm-vim.js
+
+printf 'markdown-it %s, mermaid %s, codemirror %s -> %s\n' \
+  "$MARKDOWN_IT" "$MERMAID" "$CODEMIRROR" "$DIR"

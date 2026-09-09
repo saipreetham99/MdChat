@@ -16,13 +16,24 @@ final class PreviewBridge {
         guard let web = webView else { return }
         web.window?.makeFirstResponder(web)
     }
+
+    func setView(_ name: String) {
+        webView?.evaluateJavaScript("window.setView && window.setView('\(name)')")
+    }
+
+    /// The editor buffer is the truth while editing, so read it before saving.
+    func readBuffer() async -> String? {
+        guard let web = webView else { return nil }
+        let value = try? await web.evaluateJavaScript("window.currentBuffer && window.currentBuffer()")
+        return value as? String
+    }
 }
 
 struct PreviewView: NSViewRepresentable {
     var markdown: String
-    var onContext: (String) -> Void
+    var onMessage: (String, String) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onContext: onContext) }
+    func makeCoordinator() -> Coordinator { Coordinator(onMessage: onMessage) }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -50,13 +61,13 @@ struct PreviewView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         weak var webView: WKWebView?
-        private let onContext: (String) -> Void
+        private let onMessage: (String, String) -> Void
         private var ready = false
         private var pending: String?
         private var current: String?
 
-        init(onContext: @escaping (String) -> Void) {
-            self.onContext = onContext
+        init(onMessage: @escaping (String, String) -> Void) {
+            self.onMessage = onMessage
         }
 
         func push(_ markdown: String) {
@@ -83,8 +94,8 @@ struct PreviewView: NSViewRepresentable {
         func userContentController(_ controller: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             guard let dict = message.body as? [String: Any],
-                  let text = dict["text"] as? String else { return }
-            onContext(text)
+                  let kind = dict["kind"] as? String else { return }
+            onMessage(kind, dict["text"] as? String ?? "")
         }
 
         // Open real links in the browser instead of inside the preview.

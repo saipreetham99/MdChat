@@ -1,0 +1,148 @@
+import SwiftUI
+
+struct ChatPanel: View {
+    @EnvironmentObject var state: AppState
+    @State private var draft = ""
+    @FocusState private var composerFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            transcript
+            Divider()
+            composer
+        }
+        .background(.background)
+        .onAppear { composerFocused = true }
+    }
+
+    private var transcript: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if state.messages.isEmpty {
+                        Text("Pick a block, diagram, or heading in the document, then ask about it.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 8)
+                    }
+                    ForEach(state.messages) { msg in
+                        MessageRow(message: msg).id(msg.id)
+                    }
+                    if state.isSending {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Thinking…").foregroundStyle(.secondary).font(.callout)
+                        }
+                        .id("spinner")
+                    }
+                    if let err = state.errorText {
+                        Text(err)
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: state.messages.count) { _ in
+                if let last = state.messages.last {
+                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+        }
+    }
+
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let ctx = state.pendingContext {
+                ContextChip(text: ctx) { state.pendingContext = nil }
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Ask about the document", text: $draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...6)
+                    .focused($composerFocused)
+                    .onSubmit(send)
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || state.isSending)
+                .keyboardShortcut(.return, modifiers: .command)
+            }
+            .padding(8)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color(nsColor: .separatorColor))
+            )
+        }
+        .padding(12)
+    }
+
+    private func send() {
+        let text = draft
+        draft = ""
+        state.send(text)
+    }
+}
+
+private struct MessageRow: View {
+    let message: ChatMessage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(message.role == .user ? "You" : "Gemini")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if let ctx = message.context {
+                Text(ctx)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.06),
+                                in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            Text(rendered)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Model replies come back as Markdown; render the inline subset SwiftUI supports.
+    private var rendered: AttributedString {
+        (try? AttributedString(
+            markdown: message.text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(message.text)
+    }
+}
+
+private struct ContextChip: View {
+    let text: String
+    let clear: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "text.quote").foregroundStyle(.secondary)
+            Text(text)
+                .font(.system(size: 11, design: .monospaced))
+                .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: clear) {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Clear attached context")
+        }
+        .padding(8)
+        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+}

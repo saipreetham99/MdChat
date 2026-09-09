@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<title>Preview</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1c1c1e;
+    --muted: #6e6e73;
+    --rule: #e3e3e6;
+    --code-bg: #f5f5f7;
+    --accent: #0a63c9;
+    --pick-bg: rgba(255,255,255,.92);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e1e;
+      --fg: #e6e6e6;
+      --muted: #9a9a9e;
+      --rule: #3a3a3c;
+      --code-bg: #262628;
+      --accent: #6aa9ff;
+      --pick-bg: rgba(40,40,42,.94);
+    }
+  }
+
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    padding: 28px 32px 60vh;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  #doc { max-width: 74ch; }
+
+  h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.9em 0 .6em; font-weight: 600; }
+  h1 { font-size: 1.9em; margin-top: .2em; letter-spacing: -.015em; }
+  h2 { font-size: 1.45em; padding-bottom: .25em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.18em; }
+  h4, h5, h6 { font-size: 1em; }
+  p, ul, ol, blockquote, table, pre { margin: 0 0 1em; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.5em; }
+  li { margin: .25em 0; }
+  blockquote {
+    padding: .1em 0 .1em 1em;
+    border-left: 3px solid var(--rule);
+    color: var(--muted);
+  }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 2em 0; }
+  code, pre, .mermaid {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  code { font-size: .88em; background: var(--code-bg); padding: .15em .35em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg);
+    padding: 12px 14px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: .86em;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; font-size: 1em; }
+  table { border-collapse: collapse; font-size: .94em; }
+  th, td { border: 1px solid var(--rule); padding: .4em .7em; text-align: left; }
+  th { background: var(--code-bg); font-weight: 600; }
+  img { max-width: 100%; border-radius: 6px; }
+  .mermaid { background: var(--code-bg); border-radius: 8px; padding: 12px; text-align: center; }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  /* context pickers */
+  .picker {
+    position: absolute;
+    display: none;
+    gap: 4px;
+    z-index: 20;
+    background: var(--pick-bg);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 3px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.14);
+  }
+  .picker.on { display: flex; }
+  .picker button {
+    font: 500 11px/1 -apple-system, system-ui, sans-serif;
+    color: var(--fg);
+    background: none;
+    border: 0;
+    border-radius: 5px;
+    padding: 5px 8px;
+    cursor: default;
+    white-space: nowrap;
+  }
+  .picker button:hover { background: var(--accent); color: #fff; }
+  .picker button[hidden] { display: none; }
+  .flash { animation: flash .45s ease-out; }
+  @keyframes flash {
+    from { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+    to { background: transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
+</style>
+</head>
+<body>
+  <div id="doc"></div>
+
+  <div class="picker" id="hoverPicker">
+    <button data-act="block">Ask</button>
+    <button data-act="section" hidden>Whole section</button>
+  </div>
+  <div class="picker" id="selPicker">
+    <button data-act="selection">Ask about selection</button>
+  </div>
+
+<script src="vendor/markdown-it.min.js"></script>
+<script src="vendor/mermaid.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var doc = document.getElementById("doc");
+  var hoverPicker = document.getElementById("hoverPicker");
+  var selPicker = document.getElementById("selPicker");
+
+  var SRC = "";
+  var LINES = [];
+  var hoverTarget = null;
+  var dark = window.matchMedia("(prefers-color-scheme: dark)");
+
+  function post(text) {
+    if (!text) return;
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridge) {
+      window.webkit.messageHandlers.bridge.postMessage({ text: text });
+    }
+  }
+
+  // --- markdown-it with source line mapping ------------------------------
+  var md = window.markdownit({ html: true, linkify: true, typographer: false });
+
+  md.core.ruler.push("source_lines", function (state) {
+    state.tokens.forEach(function (t) {
+      if (t.level === 0 && t.map) {
+        t.attrSet("data-line-start", String(t.map[0]));
+        t.attrSet("data-line-end", String(t.map[1]));
+      }
+    });
+  });
+
+  var defaultFence = md.renderer.rules.fence;
+  md.renderer.rules.fence = function (tokens, idx, options, env, self) {
+    var t = tokens[idx];
+    var lang = (t.info || "").trim().split(/\s+/)[0];
+    if (lang === "mermaid") {
+      var a = t.attrGet("data-line-start") || "0";
+      var b = t.attrGet("data-line-end") || "0";
+      var body = t.content
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return '<div class="mermaid" data-line-start="' + a + '" data-line-end="' + b + '">' + body + "</div>";
+    }
+    return defaultFence(tokens, idx, options, env, self);
+  };
+
+  function initMermaid() {
+    if (!window.mermaid) return;
+    window.mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: dark.matches ? "dark" : "default",
+      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace'
+    });
+  }
+  initMermaid();
+  dark.addEventListener("change", function () {
+    initMermaid();
+    render(SRC);
+  });
+
+  window.render = function (text) {
+    SRC = text || "";
+    LINES = SRC.split("\n");
+    hidePickers();
+    var y = window.scrollY;
+    doc.innerHTML = md.render(SRC);
+    window.scrollTo(0, y);
+    var nodes = Array.prototype.slice.call(doc.querySelectorAll(".mermaid"));
+    if (nodes.length && window.mermaid) {
+      window.mermaid.run({ nodes: nodes }).catch(function (e) {
+        console.warn("mermaid:", e);
+      });
+    }
+  };
+
+  // --- source slicing ----------------------------------------------------
+  function slice(start, end) {
+    if (start == null) return "";
+    return LINES.slice(start, end).join("\n").replace(/\s+$/, "");
+  }
+
+  function blockSource(el) {
+    return slice(parseInt(el.getAttribute("data-line-start"), 10),
+                 parseInt(el.getAttribute("data-line-end"), 10));
+  }
+
+  function headingLevel(el) {
+    return /^H[1-6]$/.test(el.tagName) ? parseInt(el.tagName[1], 10) : 0;
+  }
+
+  /** Everything from this heading down to the next heading of same or higher rank. */
+  function sectionSource(el) {
+    var level = headingLevel(el);
+    if (!level) return blockSource(el);
+    var start = parseInt(el.getAttribute("data-line-start"), 10);
+    var all = Array.prototype.slice.call(doc.querySelectorAll("h1,h2,h3,h4,h5,h6"));
+    var end = LINES.length;
+    for (var i = 0; i < all.length; i++) {
+      var h = all[i];
+      var hs = parseInt(h.getAttribute("data-line-start"), 10);
+      if (isNaN(hs) || hs <= start) continue;
+      if (headingLevel(h) <= level) { end = hs; break; }
+    }
+    return slice(start, end);
+  }
+
+  function flash(el) {
+    el.classList.remove("flash");
+    void el.offsetWidth;
+    el.classList.add("flash");
+  }
+
+  // --- hover picker ------------------------------------------------------
+  function place(picker, rect, alignRight) {
+    picker.classList.add("on");
+    var w = picker.offsetWidth;
+    var left = alignRight
+      ? rect.right + window.scrollX - w
+      : rect.left + window.scrollX;
+    left = Math.max(8, Math.min(left, document.documentElement.clientWidth - w - 8));
+    picker.style.left = left + "px";
+    picker.style.top = Math.max(2, rect.top + window.scrollY - picker.offsetHeight - 4) + "px";
+  }
+
+  function hidePickers() {
+    hoverPicker.classList.remove("on");
+    selPicker.classList.remove("on");
+    hoverTarget = null;
+  }
+
+  var queued = false;
+  document.addEventListener("mousemove", function (e) {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function () {
+      queued = false;
+      if (e.target.closest && e.target.closest(".picker")) return;
+      var block = e.target.closest ? e.target.closest("#doc [data-line-start]") : null;
+      if (!block) {
+        hoverPicker.classList.remove("on");
+        hoverTarget = null;
+        return;
+      }
+      if (block === hoverTarget) return;
+      hoverTarget = block;
+      hoverPicker.querySelector('[data-act="section"]').hidden = !headingLevel(block);
+      place(hoverPicker, block.getBoundingClientRect(), true);
+    });
+  });
+
+  hoverPicker.addEventListener("mousedown", function (e) { e.preventDefault(); });
+  hoverPicker.addEventListener("click", function (e) {
+    var act = e.target.getAttribute("data-act");
+    if (!act || !hoverTarget) return;
+    post(act === "section" ? sectionSource(hoverTarget) : blockSource(hoverTarget));
+    flash(hoverTarget);
+    hoverPicker.classList.remove("on");
+  });
+
+  // --- selection picker --------------------------------------------------
+  function selectionText() {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    if (!doc.contains(sel.anchorNode)) return null;
+    var text = sel.toString().trim();
+    return text ? text : null;
+  }
+
+  document.addEventListener("selectionchange", function () {
+    var text = selectionText();
+    if (!text) { selPicker.classList.remove("on"); return; }
+    var rect = window.getSelection().getRangeAt(0).getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)) { selPicker.classList.remove("on"); return; }
+    place(selPicker, rect, false);
+  });
+
+  selPicker.addEventListener("mousedown", function (e) { e.preventDefault(); });
+  selPicker.addEventListener("click", function () {
+    var text = selectionText();
+    if (text) post(text);
+    selPicker.classList.remove("on");
+  });
+
+  // Called from the ⌘⇧C menu command.
+  window.captureSelection = function () {
+    var text = selectionText();
+    if (text) { post(text); selPicker.classList.remove("on"); return; }
+    if (hoverTarget) { post(blockSource(hoverTarget)); flash(hoverTarget); }
+  };
+
+  window.addEventListener("scroll", hidePickers, { passive: true });
+  window.addEventListener("resize", hidePickers);
+})();
+</script>
+</body>
+</html>

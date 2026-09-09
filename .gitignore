@@ -1,0 +1,3 @@
+.build/
+MdChat.app/
+Sources/MdChat/Resources/vendor/*.js

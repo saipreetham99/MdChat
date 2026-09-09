@@ -51,9 +51,9 @@ struct AppCommands: Commands {
 
             Button("Send Selection as Context") {
                 PreviewBridge.shared.captureSelection()
-                state.chatVisible = true
             }
-            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .keyboardShortcut(.return, modifiers: .command)
+
 
             Divider()
 

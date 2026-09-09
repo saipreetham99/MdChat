@@ -10,6 +10,12 @@ final class PreviewBridge {
     func captureSelection() {
         webView?.evaluateJavaScript("window.captureSelection && window.captureSelection()")
     }
+
+    /// Vim keys only arrive when the web view is first responder.
+    func focusPreview() {
+        guard let web = webView else { return }
+        web.window?.makeFirstResponder(web)
+    }
 }
 
 struct PreviewView: NSViewRepresentable {

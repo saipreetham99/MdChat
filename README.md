@@ -25,8 +25,8 @@ string the API currently expects for the Flash model you want.
 | --- | --- |
 | ⌘O | Open a `.md` file |
 | ⌘J | Toggle chat panel |
-| ⌘⇧C | Send current selection (or hovered block) as context |
-| ⌘↩ | Send the message |
+| ⌘↩ | Send selection (or the block at the cursor) as context |
+| ↩ | Send the chat message (⇧↩ for a newline) |
 | ⌘⇧N | New conversation (also stops a stream) |
 | ⌘R | Reload from disk |
 | ⌘⇧D | Cycle appearance: system, light, dark |
@@ -42,10 +42,45 @@ DOM is a lookup table back into the raw file. Three ways to grab context:
 - **Hover a heading** → `Whole section` walks forward to the next heading of the
   same or higher rank and slices everything between.
 - **Select text** → sends the selection verbatim.
+- **Vim motions** → move the cursor, select with `v`/`V`, then ⌘↩.
 
 Because slices come from the source rather than `textContent`, code blocks and
 Mermaid diagrams arrive as their original fenced source, which is what the model
 actually wants to reason about.
+
+## Vim motions in the preview
+
+Click the preview (or press ⌘J to hide the chat) to give it the keyboard.
+
+| Keys | |
+| --- | --- |
+| `h` `j` `k` `l` | character and line movement |
+| `w` `b` `e` | word movement |
+| `0` `^` `$` | line start and end |
+| `{` `}` | paragraph |
+| `gg` `G` | top and bottom |
+| `v` `V` | charwise and linewise visual; press again or Escape to leave |
+| `s` | flash-style jump: type a couple of characters, press the label |
+| `/` then Enter | search; `n` and `N` walk the matches |
+| ⌘↩ | send the visual selection, or the block under the cursor |
+| Escape | leave visual mode, clear the search |
+
+A mode badge sits bottom-right when visual mode or a search is active. Lowercase
+searches are case-insensitive, mixed-case ones aren't, the way `smartcase` works.
+
+`s` labels only what's on screen, so the label set stays short. Labels are
+assigned nearest-to-cursor first, and any character that could be the next one
+you type is dropped from the label pool — so typing keeps refining and a label
+press always means jump. One remaining match jumps on its own. Backspace steps
+back a character, Escape cancels. In visual mode the jump extends the selection
+instead of moving the cursor, which pairs with ⌘↩ for grabbing an odd-shaped
+range.
+
+Movement leans on WebKit's `Selection.modify`, which supplies real word and line
+granularity, so `j` follows wrapped visual lines rather than source lines — same
+as vim without `gj`. Two consequences worth knowing: `e` behaves like `w` because
+WebKit has no word-end granularity, and count prefixes (`3j`) aren't wired up.
+Clicking moves the cursor too, so mouse and keyboard stay in agreement.
 
 ## Layout
 
@@ -59,7 +94,7 @@ Gemini.swift       streamGenerateContent SSE, no SDK
 Keychain.swift     ~40 lines around SecItem*
 Appearance.swift   light/dark/system enum
 Prompt.swift       the system prompt, tune it here
-Resources/preview.html  render + line mapping + context pickers
+Resources/preview.html  render + line mapping + pickers + vim layer
 ```
 
 Appearance is set on `NSApplication.shared`, which covers the SwiftUI chrome and

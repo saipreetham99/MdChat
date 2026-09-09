@@ -22,6 +22,8 @@ final class AppState: ObservableObject {
     @Published var isSending = false
     @Published var errorText: String?
     @Published var showSettings = false
+    /// Bumped to pull keyboard focus into the composer.
+    @Published var composerFocusToken = 0
 
     @Published var modelID: String {
         didSet { UserDefaults.standard.set(modelID, forKey: "modelID") }
@@ -79,6 +81,11 @@ final class AppState: ObservableObject {
 
     func toggleChat() {
         withAnimation(.easeOut(duration: 0.18)) { chatVisible.toggle() }
+        if chatVisible {
+            composerFocusToken += 1
+        } else {
+            PreviewBridge.shared.focusPreview()
+        }
     }
 
     func attach(context: String) {
@@ -86,6 +93,7 @@ final class AppState: ObservableObject {
         guard !trimmed.isEmpty else { return }
         pendingContext = trimmed
         chatVisible = true
+        composerFocusToken += 1
     }
 
     func saveKey(_ key: String) {

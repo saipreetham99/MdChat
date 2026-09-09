@@ -35,7 +35,7 @@
     font: 15px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  #doc { max-width: 74ch; }
+  #doc { max-width: none; }
 
   h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.9em 0 .6em; font-weight: 600; }
   h1 { font-size: 1.9em; margin-top: .2em; letter-spacing: -.015em; }
@@ -99,6 +99,74 @@
   }
   .picker button:hover { background: var(--accent); color: #fff; }
   .picker button[hidden] { display: none; }
+  /* vim caret + chrome */
+  #caret {
+    position: absolute;
+    display: none;
+    width: 2px;
+    background: var(--accent);
+    z-index: 15;
+    pointer-events: none;
+    animation: blink 1.1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: .25; } }
+  #doc ::selection, #doc::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+
+  #badge, #searchBar {
+    position: fixed;
+    bottom: 10px;
+    font: 500 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--pick-bg);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 6px 9px;
+    z-index: 30;
+    color: var(--muted);
+  }
+  #badge { right: 10px; display: none; }
+  #badge.on { display: block; }
+  #badge b { color: var(--accent); font-weight: 600; }
+
+  #searchBar { left: 10px; display: none; align-items: center; gap: 4px; }
+  #searchBar.on { display: flex; }
+  #searchInput {
+    font: inherit;
+    color: var(--fg);
+    background: none;
+    border: 0;
+    outline: none;
+    width: 26ch;
+    padding: 0;
+  }
+
+  /* flash-style jump overlay */
+  #jumpLayer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: none;
+    z-index: 25;
+    pointer-events: none;
+  }
+  #jumpLayer.on { display: block; }
+  .jump-hl {
+    position: absolute;
+    background: var(--accent);
+    opacity: .26;
+    border-radius: 2px;
+  }
+  .jump-label {
+    position: absolute;
+    font: 700 11px/1.3 ui-monospace, "SF Mono", Menlo, monospace;
+    color: #fff;
+    background: var(--accent);
+    border-radius: 3px;
+    padding: 1px 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.3);
+  }
+  .jump-label.dim { background: var(--muted); }
+
   .flash { animation: flash .45s ease-out; }
   @keyframes flash {
     from { background: color-mix(in srgb, var(--accent) 22%, transparent); }
@@ -117,6 +185,11 @@
   <div class="picker" id="selPicker">
     <button data-act="selection">Ask about selection</button>
   </div>
+
+  <div id="jumpLayer"></div>
+  <div id="caret"></div>
+  <div id="badge"></div>
+  <div id="searchBar"><span>/</span><input id="searchInput" spellcheck="false" autocomplete="off"></div>
 
 <script src="vendor/markdown-it.min.js"></script>
 <script src="vendor/mermaid.min.js"></script>
@@ -194,6 +267,7 @@
         console.warn("mermaid:", e);
       });
     }
+    resetVim();
   };
 
   // --- source slicing ----------------------------------------------------
@@ -290,6 +364,7 @@
   }
 
   document.addEventListener("selectionchange", function () {
+    if (mode !== "normal" || programmatic) { selPicker.classList.remove("on"); return; }
     var text = selectionText();
     if (!text) { selPicker.classList.remove("on"); return; }
     var rect = window.getSelection().getRangeAt(0).getBoundingClientRect();
@@ -304,15 +379,556 @@
     selPicker.classList.remove("on");
   });
 
-  // Called from the ⌘⇧C menu command.
+  // Called from the ⌘↩ menu command.
   window.captureSelection = function () {
     var text = selectionText();
-    if (text) { post(text); selPicker.classList.remove("on"); return; }
-    if (hoverTarget) { post(blockSource(hoverTarget)); flash(hoverTarget); }
+    if (text) {
+      post(text);
+      selPicker.classList.remove("on");
+      if (mode !== "normal") setMode("normal");
+      return;
+    }
+    var block = focusPoint && doc.contains(focusPoint.node) ? blockAt(focusPoint) : hoverTarget;
+    if (block) { post(blockSource(block)); flash(block); }
   };
 
-  window.addEventListener("scroll", hidePickers, { passive: true });
-  window.addEventListener("resize", hidePickers);
+  // ===================== vim motions =====================================
+  var caretEl = document.getElementById("caret");
+  var badge = document.getElementById("badge");
+  var searchBar = document.getElementById("searchBar");
+  var searchInput = document.getElementById("searchInput");
+
+  var mode = "normal";       // normal | visual | vline
+  var focusPoint = null;     // {node, offset} — the cursor
+  var anchorPoint = null;    // where visual mode started
+  var pendingG = false;
+  var programmatic = false;  // true while we write the selection ourselves
+  var matches = [];
+  var matchIndex = -1;
+  var query = "";
+
+  var jumpLayer = document.getElementById("jumpLayer");
+  var jumping = false;
+  var jumpQuery = "";
+  var jumpTargets = [];
+  // Home-row first, and no characters that commonly follow a match.
+  var LABELS = "jfkdlshgurnvieowmbcxztpqay";
+
+  function sel() { return window.getSelection(); }
+
+  /** Write the selection without tripping the hover/selection pickers. */
+  function mark(fn) {
+    programmatic = true;
+    fn();
+    setTimeout(function () { programmatic = false; }, 0);
+  }
+
+  function pointFromSelection() {
+    var s = sel();
+    if (!s.rangeCount || !s.focusNode) return null;
+    return { node: s.focusNode, offset: s.focusOffset };
+  }
+
+  function collapseAt(point) {
+    var r = document.createRange();
+    try { r.setStart(point.node, point.offset); } catch (e) { return; }
+    r.collapse(true);
+    var s = sel();
+    s.removeAllRanges();
+    s.addRange(r);
+  }
+
+  /** WebKit's Selection.modify does the hard part: word and line granularity. */
+  function motion(point, dir, gran) {
+    collapseAt(point);
+    try { sel().modify("move", dir, gran); } catch (e) { return point; }
+    return pointFromSelection() || point;
+  }
+
+  function comparePoints(a, b) {
+    var ra = document.createRange();
+    var rb = document.createRange();
+    try {
+      ra.setStart(a.node, a.offset);
+      rb.setStart(b.node, b.offset);
+    } catch (e) { return 0; }
+    return ra.compareBoundaryPoints(Range.START_TO_START, rb);
+  }
+
+  function walker() {
+    return document.createTreeWalker(doc, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        return n.nodeValue && n.nodeValue.trim()
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT;
+      }
+    });
+  }
+
+  function firstTextNode() { return walker().nextNode(); }
+
+  function lastTextNode() {
+    var w = walker(), last = null, n;
+    while ((n = w.nextNode())) last = n;
+    return last;
+  }
+
+  /** Entering vim from a scrolled position shouldn't yank you to the top. */
+  function firstVisibleNode() {
+    var w = walker(), n;
+    while ((n = w.nextNode())) {
+      var r = document.createRange();
+      r.selectNodeContents(n);
+      var rect = r.getBoundingClientRect();
+      if (rect && rect.bottom > 0) return n;
+    }
+    return firstTextNode();
+  }
+
+  function ensureCaret() {
+    if (focusPoint && doc.contains(focusPoint.node)) return true;
+    var n = firstVisibleNode();
+    if (!n) return false;
+    focusPoint = { node: n, offset: 0 };
+    return true;
+  }
+
+  function blockAt(point) {
+    var el = point.node.nodeType === 1 ? point.node : point.node.parentElement;
+    return el && el.closest ? el.closest("#doc [data-line-start]") : null;
+  }
+
+  function rectAt(point) {
+    var r = document.createRange();
+    try { r.setStart(point.node, point.offset); } catch (e) { return null; }
+    r.collapse(true);
+    var rect = r.getBoundingClientRect();
+    if (rect && (rect.height || rect.width)) return rect;
+    var el = point.node.nodeType === 1 ? point.node : point.node.parentElement;
+    return el ? el.getBoundingClientRect() : null;
+  }
+
+  function drawCaret() {
+    if (mode !== "normal" || !focusPoint) { caretEl.style.display = "none"; return; }
+    var rect = rectAt(focusPoint);
+    if (!rect) { caretEl.style.display = "none"; return; }
+    caretEl.style.display = "block";
+    caretEl.style.left = (rect.left + window.scrollX) + "px";
+    caretEl.style.top = (rect.top + window.scrollY) + "px";
+    caretEl.style.height = Math.max(14, rect.height) + "px";
+  }
+
+  function revealCaret() {
+    if (!focusPoint) return;
+    var rect = rectAt(focusPoint);
+    if (!rect) return;
+    var pad = 60;
+    if (rect.top < pad) window.scrollBy(0, rect.top - pad);
+    else if (rect.bottom > window.innerHeight - pad) {
+      window.scrollBy(0, rect.bottom - window.innerHeight + pad);
+    }
+  }
+
+  function escHtml(t) {
+    return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function updateBadge() {
+    var bits = [];
+    if (jumping) bits.push("<b>JUMP</b> " + escHtml(jumpQuery));
+    if (mode === "visual") bits.push("<b>VISUAL</b>");
+    else if (mode === "vline") bits.push("<b>V-LINE</b>");
+    if (query) {
+      bits.push("/" + escHtml(query) + "  " + (matches.length ? matchIndex + 1 : 0) + "/" + matches.length);
+    }
+    if (!bits.length) { badge.classList.remove("on"); return; }
+    badge.innerHTML = bits.join("   ");
+    badge.classList.add("on");
+  }
+
+  function applyVisual() {
+    if (!anchorPoint || !focusPoint) return;
+    var back = comparePoints(anchorPoint, focusPoint) > 0;
+    var start = back ? focusPoint : anchorPoint;
+    var end = back ? anchorPoint : focusPoint;
+
+    if (mode === "vline") {
+      start = motion(start, "backward", "lineboundary");
+      end = motion(end, "forward", "lineboundary");
+    } else {
+      // vim's charwise visual includes the character under the cursor
+      var wide = motion(end, "forward", "character");
+      if (comparePoints(wide, end) > 0) end = wide;
+    }
+
+    var r = document.createRange();
+    try {
+      r.setStart(start.node, start.offset);
+      r.setEnd(end.node, end.offset);
+    } catch (e) { return; }
+    mark(function () {
+      var s = sel();
+      s.removeAllRanges();
+      s.addRange(r);
+    });
+  }
+
+  function setMode(next) {
+    mode = next;
+    if (next === "normal") {
+      anchorPoint = null;
+      if (focusPoint) mark(function () { collapseAt(focusPoint); });
+      selPicker.classList.remove("on");
+    }
+    drawCaret();
+    updateBadge();
+  }
+
+  function enterVisual(kind) {
+    if (!ensureCaret()) return;
+    if (mode === kind) { setMode("normal"); return; }
+    anchorPoint = focusPoint;
+    mode = kind;
+    applyVisual();
+    drawCaret();
+    updateBadge();
+  }
+
+  function settle() {
+    if (mode === "normal") mark(function () { collapseAt(focusPoint); });
+    else applyVisual();
+    revealCaret();
+    drawCaret();
+  }
+
+  function go(dir, gran) {
+    if (!ensureCaret()) return;
+    focusPoint = motion(focusPoint, dir, gran);
+    settle();
+  }
+
+  function gotoTop() {
+    var n = firstTextNode();
+    if (!n) return;
+    focusPoint = { node: n, offset: 0 };
+    window.scrollTo(0, 0);
+    settle();
+  }
+
+  function gotoBottom() {
+    var n = lastTextNode();
+    if (!n) return;
+    focusPoint = { node: n, offset: n.nodeValue.length };
+    window.scrollTo(0, document.body.scrollHeight);
+    settle();
+  }
+
+  // --- flash-style jump --------------------------------------------------
+  /** Only what's on screen can be labelled, which keeps the label set small. */
+  function visibleTextNodes() {
+    var w = walker(), n, out = [];
+    var h = window.innerHeight;
+    while ((n = w.nextNode())) {
+      var r = document.createRange();
+      r.selectNodeContents(n);
+      var rect = r.getBoundingClientRect();
+      if (rect.bottom > 0 && rect.top < h) out.push(n);
+    }
+    return out;
+  }
+
+  function findJumpTargets() {
+    var out = [];
+    if (!jumpQuery) return out;
+
+    var smart = jumpQuery === jumpQuery.toLowerCase();
+    var needle = smart ? jumpQuery.toLowerCase() : jumpQuery;
+    var h = window.innerHeight;
+
+    visibleTextNodes().forEach(function (node) {
+      var hay = smart ? node.nodeValue.toLowerCase() : node.nodeValue;
+      var i = hay.indexOf(needle);
+      while (i !== -1) {
+        var r = document.createRange();
+        r.setStart(node, i);
+        r.setEnd(node, i + jumpQuery.length);
+        var rect = r.getBoundingClientRect();
+        if (rect.bottom > 0 && rect.top < h) {
+          out.push({
+            range: r,
+            rect: rect,
+            next: hay.charAt(i + jumpQuery.length),
+            label: null
+          });
+        }
+        i = hay.indexOf(needle, i + 1);
+      }
+    });
+
+    // Nearest to the cursor gets the easiest label.
+    var origin = focusPoint && doc.contains(focusPoint.node) ? rectAt(focusPoint) : null;
+    var oy = origin ? origin.top : 0;
+    out.sort(function (a, b) {
+      return Math.abs(a.rect.top - oy) - Math.abs(b.rect.top - oy);
+    });
+
+    // A label that could also be the next typed character would be ambiguous.
+    var blocked = {};
+    out.forEach(function (t) { if (t.next) blocked[t.next.toLowerCase()] = true; });
+    var pool = LABELS.split("").filter(function (c) { return !blocked[c]; });
+    out.forEach(function (t, i) { t.label = i < pool.length ? pool[i] : null; });
+
+    return out;
+  }
+
+  function renderJump() {
+    jumpLayer.innerHTML = "";
+    if (!jumpTargets.length) { jumpLayer.classList.remove("on"); return; }
+
+    jumpTargets.forEach(function (t) {
+      var rect = t.range.getBoundingClientRect();
+
+      var hl = document.createElement("div");
+      hl.className = "jump-hl";
+      hl.style.left = (rect.left + window.scrollX) + "px";
+      hl.style.top = (rect.top + window.scrollY) + "px";
+      hl.style.width = rect.width + "px";
+      hl.style.height = rect.height + "px";
+      jumpLayer.appendChild(hl);
+
+      if (!t.label) return;
+      var lb = document.createElement("div");
+      lb.className = "jump-label";
+      lb.textContent = t.label;
+      lb.style.left = (rect.right + window.scrollX + 1) + "px";
+      lb.style.top = (rect.top + window.scrollY) + "px";
+      jumpLayer.appendChild(lb);
+    });
+
+    jumpLayer.classList.add("on");
+  }
+
+  function refreshJump() {
+    jumpTargets = findJumpTargets();
+    renderJump();
+    updateBadge();
+  }
+
+  function startJump() {
+    jumping = true;
+    jumpQuery = "";
+    jumpTargets = [];
+    hidePickers();
+    renderJump();
+    updateBadge();
+  }
+
+  function endJump() {
+    jumping = false;
+    jumpQuery = "";
+    jumpTargets = [];
+    jumpLayer.innerHTML = "";
+    jumpLayer.classList.remove("on");
+    updateBadge();
+  }
+
+  /** Land on a target: normal mode moves the cursor, visual mode extends. */
+  function jumpTo(target) {
+    focusPoint = { node: target.range.startContainer, offset: target.range.startOffset };
+    endJump();
+    settle();
+  }
+
+  function handleJumpKey(e) {
+    var k = e.key;
+
+    if (k === "Escape") { e.preventDefault(); endJump(); return; }
+    if (k === "Backspace") {
+      e.preventDefault();
+      jumpQuery = jumpQuery.slice(0, -1);
+      if (!jumpQuery) { jumpTargets = []; renderJump(); updateBadge(); }
+      else refreshJump();
+      return;
+    }
+    if (k === "Enter") {
+      e.preventDefault();
+      if (jumpTargets.length) jumpTo(jumpTargets[0]);
+      return;
+    }
+    if (k.length !== 1) return;
+    e.preventDefault();
+
+    // A label press wins over extending the query.
+    for (var i = 0; i < jumpTargets.length; i++) {
+      if (jumpTargets[i].label === k) { jumpTo(jumpTargets[i]); return; }
+    }
+
+    jumpQuery += k;
+    refreshJump();
+    if (jumpTargets.length === 1) jumpTo(jumpTargets[0]);   // unambiguous, just go
+  }
+
+  // --- search ------------------------------------------------------------
+  function runSearch(q) {
+    matches = [];
+    matchIndex = -1;
+    query = q || "";
+    if (!query) { updateBadge(); return; }
+
+    var smart = query === query.toLowerCase();   // lowercase query = case-insensitive
+    var needle = smart ? query.toLowerCase() : query;
+    var w = walker(), n;
+    while ((n = w.nextNode())) {
+      var hay = smart ? n.nodeValue.toLowerCase() : n.nodeValue;
+      var i = hay.indexOf(needle);
+      while (i !== -1) {
+        var r = document.createRange();
+        r.setStart(n, i);
+        r.setEnd(n, i + query.length);
+        matches.push(r);
+        i = hay.indexOf(needle, i + query.length);
+      }
+    }
+    updateBadge();
+  }
+
+  function jumpToMatch(i) {
+    if (!matches.length) return;
+    matchIndex = (i % matches.length + matches.length) % matches.length;
+    var r = matches[matchIndex];
+    mode = "normal";
+    anchorPoint = null;
+    mark(function () {
+      var s = sel();
+      s.removeAllRanges();
+      s.addRange(r.cloneRange());
+    });
+    focusPoint = { node: r.startContainer, offset: r.startOffset };
+    revealCaret();
+    drawCaret();
+    updateBadge();
+  }
+
+  function firstMatchAfterCaret() {
+    if (!focusPoint) return 0;
+    for (var i = 0; i < matches.length; i++) {
+      var p = { node: matches[i].startContainer, offset: matches[i].startOffset };
+      if (comparePoints(p, focusPoint) > 0) return i;
+    }
+    return 0;
+  }
+
+  function openSearch() {
+    searchBar.classList.add("on");
+    searchInput.value = "";
+    searchInput.focus();
+  }
+
+  function closeSearch() {
+    searchBar.classList.remove("on");
+    searchInput.blur();
+  }
+
+  searchInput.addEventListener("keydown", function (e) {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      runSearch(searchInput.value);
+      closeSearch();
+      if (matches.length) jumpToMatch(firstMatchAfterCaret());
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeSearch();
+    }
+  });
+
+  // --- keymap ------------------------------------------------------------
+  var MOTIONS = {
+    h: ["backward", "character"],
+    l: ["forward", "character"],
+    j: ["forward", "line"],
+    k: ["backward", "line"],
+    w: ["forward", "word"],
+    b: ["backward", "word"],
+    e: ["forward", "word"],
+    "0": ["backward", "lineboundary"],
+    "^": ["backward", "lineboundary"],
+    $: ["forward", "lineboundary"],
+    "{": ["backward", "paragraph"],
+    "}": ["forward", "paragraph"]
+  };
+
+  document.addEventListener("keydown", function (e) {
+    if (document.activeElement === searchInput) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;   // ⌘↩ is handled by the app menu
+
+    if (jumping) { handleJumpKey(e); return; }
+
+    var k = e.key;
+
+    if (k === "g" && !e.shiftKey) {
+      if (pendingG) { pendingG = false; e.preventDefault(); gotoTop(); }
+      else { pendingG = true; setTimeout(function () { pendingG = false; }, 700); }
+      return;
+    }
+    pendingG = false;
+
+    if (Object.prototype.hasOwnProperty.call(MOTIONS, k)) {
+      e.preventDefault();
+      go(MOTIONS[k][0], MOTIONS[k][1]);
+      return;
+    }
+
+    switch (k) {
+      case "G": e.preventDefault(); gotoBottom(); return;
+      case "s": e.preventDefault(); startJump(); return;
+      case "v": e.preventDefault(); enterVisual("visual"); return;
+      case "V": e.preventDefault(); enterVisual("vline"); return;
+      case "/": e.preventDefault(); openSearch(); return;
+      case "n": e.preventDefault(); jumpToMatch(matchIndex + 1); return;
+      case "N": e.preventDefault(); jumpToMatch(matchIndex - 1); return;
+      case "Escape":
+        e.preventDefault();
+        if (searchBar.classList.contains("on")) { closeSearch(); return; }
+        if (query) { query = ""; matches = []; matchIndex = -1; }
+        setMode("normal");
+        return;
+    }
+  });
+
+  // Clicking should move the vim cursor too, so mouse and keyboard agree.
+  document.addEventListener("mouseup", function () {
+    var p = pointFromSelection();
+    if (!p || !doc.contains(p.node)) return;
+    focusPoint = p;
+    if (sel().isCollapsed) { mode = "normal"; anchorPoint = null; }
+    drawCaret();
+    updateBadge();
+  });
+
+  function resetVim() {
+    endJump();
+    mode = "normal";
+    focusPoint = null;
+    anchorPoint = null;
+    matches = [];
+    matchIndex = -1;
+    query = "";
+    caretEl.style.display = "none";
+    badge.classList.remove("on");
+    closeSearch();
+  }
+
+  window.addEventListener("scroll", function () {
+    hidePickers();
+    drawCaret();
+    if (jumping) renderJump();
+  }, { passive: true });
+  window.addEventListener("resize", function () {
+    hidePickers();
+    drawCaret();
+    if (jumping) endJump();   // labels would be stale after a reflow
+  });
 })();
 </script>
 </body>

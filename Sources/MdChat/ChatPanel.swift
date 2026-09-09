@@ -13,6 +13,12 @@ struct ChatPanel: View {
         }
         .background(.background)
         .onAppear { composerFocused = true }
+        .onChange(of: state.composerFocusToken) { _ in composerFocused = true }
+        // Escape hands the keyboard back to the preview's vim layer.
+        .onExitCommand {
+            composerFocused = false
+            PreviewBridge.shared.focusPreview()
+        }
     }
 
     private var transcript: some View {
@@ -76,8 +82,7 @@ struct ChatPanel: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!state.isSending && draft.trimmingCharacters(in: .whitespaces).isEmpty)
-                .keyboardShortcut(.return, modifiers: .command)
-                .help(state.isSending ? "Stop generating" : "Send (⌘↩)")
+                .help(state.isSending ? "Stop generating" : "Send (↩)")
             }
             .padding(8)
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))

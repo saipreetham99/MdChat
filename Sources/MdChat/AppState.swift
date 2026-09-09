@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -27,11 +28,31 @@ final class AppState: ObservableObject {
     }
     @Published var apiKey: String = ""
 
+    @Published var appearance: Appearance {
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
+            applyAppearance()
+        }
+    }
+
     private var watcher: FileWatcher?
+    private var streamTask: Task<Void, Never>?
 
     private init() {
         modelID = UserDefaults.standard.string(forKey: "modelID") ?? "gemini-flash-latest"
         apiKey = Keychain.read() ?? ""
+        let saved = UserDefaults.standard.string(forKey: "appearance") ?? ""
+        appearance = Appearance(rawValue: saved) ?? .system
+    }
+
+    /// Setting it on NSApp covers the SwiftUI chrome and the web view, which maps
+    /// its effective appearance onto the preview's prefers-color-scheme queries.
+    func applyAppearance() {
+        NSApplication.shared.appearance = appearance.nsAppearance
+    }
+
+    func cycleAppearance() {
+        appearance = appearance.next
     }
 
     // MARK: - Document
@@ -76,46 +97,69 @@ final class AppState: ObservableObject {
         let question = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !isSending else { return }
         guard !apiKey.isEmpty else {
-            errorText = "Add a Gemini API key first (⌘,)."
+            errorText = "Add a Gemini API key first (\u{2318},)."
             showSettings = true
             return
         }
 
-        let context = pendingContext
-        messages.append(ChatMessage(role: .user, text: question, context: context))
+        messages.append(ChatMessage(role: .user, text: question, context: pendingContext))
         pendingContext = nil
-        isSending = true
         errorText = nil
 
+        // Build the turns before the placeholder goes in; an empty model turn is rejected.
         let turns = messages.map { msg -> Gemini.Turn in
             var text = msg.text
             if msg.role == .user, let ctx = msg.context {
-                text = "Selected from the document:\n---\n\(ctx)\n---\n\nQuestion: \(msg.text)"
+                text = "From the document I'm reading:\n\n\(ctx)\n\n---\n\n\(msg.text)"
             }
             return Gemini.Turn(role: msg.role.rawValue, text: text)
         }
 
-        let key = apiKey, model = modelID
-        let name = fileURL?.lastPathComponent ?? "untitled.md"
+        let placeholder = ChatMessage(role: .model, text: "")
+        let id = placeholder.id
+        messages.append(placeholder)
+        isSending = true
 
-        Task {
+        let key = apiKey
+        let model = modelID
+        let system = Prompt.system(documentName: fileURL?.lastPathComponent ?? "untitled.md")
+
+        streamTask = Task { [weak self] in
             do {
-                let reply = try await Gemini.generate(
-                    apiKey: key,
-                    model: model,
-                    system: """
-                    You answer questions about a Markdown document the user is reading (\(name)). \
-                    The user attaches the exact excerpt they selected. Answer about that excerpt \
-                    directly and concisely. Say so when the excerpt is not enough to answer.
-                    """,
-                    turns: turns
-                )
-                messages.append(ChatMessage(role: .model, text: reply))
+                for try await delta in Gemini.stream(apiKey: key, model: model, system: system, turns: turns) {
+                    guard let self else { return }
+                    guard let i = self.index(of: id) else { break }   // bubble was cleared
+                    self.messages[i].text += delta
+                }
             } catch {
-                errorText = error.localizedDescription
+                if !(error is CancellationError) {
+                    self?.errorText = error.localizedDescription
+                }
             }
-            isSending = false
+            guard let self else { return }
+            // Nothing arrived (error or immediate stop): drop the empty bubble.
+            if let i = self.index(of: id), self.messages[i].text.isEmpty {
+                self.messages.remove(at: i)
+            }
+            self.isSending = false
+            self.streamTask = nil
         }
+    }
+
+    func stop() {
+        streamTask?.cancel()
+        streamTask = nil
+        isSending = false
+    }
+
+    func newConversation() {
+        stop()
+        messages.removeAll()
+        errorText = nil
+    }
+
+    private func index(of id: UUID) -> Int? {
+        messages.firstIndex { $0.id == id }
     }
 
     static let welcome = """

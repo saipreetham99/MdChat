@@ -24,6 +24,19 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
             ToolbarItem {
+                Menu {
+                    Picker("Appearance", selection: $state.appearance) {
+                        ForEach(Appearance.allCases) { option in
+                            Label(option.label, systemImage: option.icon).tag(option)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Image(systemName: state.appearance.icon)
+                }
+                .help("Appearance (⌘⇧D cycles)")
+            }
+            ToolbarItem {
                 Button {
                     state.toggleChat()
                 } label: {
@@ -36,6 +49,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $state.showSettings) { SettingsSheet() }
         .navigationTitle("MdChat")
+        .onAppear { state.applyAppearance() }
     }
 }
 

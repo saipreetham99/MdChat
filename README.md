@@ -27,8 +27,9 @@ string the API currently expects for the Flash model you want.
 | ⌘J | Toggle chat panel |
 | ⌘⇧C | Send current selection (or hovered block) as context |
 | ⌘↩ | Send the message |
-| ⌘⇧N | New conversation |
+| ⌘⇧N | New conversation (also stops a stream) |
 | ⌘R | Reload from disk |
+| ⌘⇧D | Cycle appearance: system, light, dark |
 | ⌘, | API key and model |
 
 ## How context selection works
@@ -54,10 +55,18 @@ ContentView.swift  HStack split + settings sheet
 ChatPanel.swift    transcript, context chip, composer
 PreviewView.swift  NSViewRepresentable over WKWebView + JS bridge
 AppState.swift     document, file watcher, message list, send()
-Gemini.swift       generateContent POST, no SDK
+Gemini.swift       streamGenerateContent SSE, no SDK
 Keychain.swift     ~40 lines around SecItem*
+Appearance.swift   light/dark/system enum
+Prompt.swift       the system prompt, tune it here
 Resources/preview.html  render + line mapping + context pickers
 ```
+
+Appearance is set on `NSApplication.shared`, which covers the SwiftUI chrome and
+the preview together: WebKit maps the view's effective appearance onto
+`prefers-color-scheme`, so the CSS variables and the Mermaid theme both follow.
+The preview listens for the change and re-renders, since Mermaid bakes its theme
+into the generated SVG.
 
 Live reload uses a `DispatchSourceFileSystemObject` on the file descriptor and
 re-arms itself on `.rename`/`.delete`, since most editors save by writing a temp
@@ -66,8 +75,8 @@ re-renders.
 
 ## Known limits
 
-- Replies aren't streamed; the panel shows a spinner until the full response
-  lands.
+- Replies stream over SSE. The send button becomes a stop button while tokens
+  are arriving; stopping keeps whatever text already landed.
 - Model replies render with `AttributedString(markdown:)`, which handles inline
   formatting but not fenced code blocks in the reply.
 - The whole conversation is resent each turn. Fine for a document Q&A session;

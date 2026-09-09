@@ -29,6 +29,20 @@ struct AppCommands: Commands {
                 .disabled(state.fileURL == nil)
         }
 
+        CommandGroup(after: .toolbar) {
+            Picker("Appearance", selection: $state.appearance) {
+                ForEach(Appearance.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.inline)
+
+            Button("Cycle Appearance") { state.cycleAppearance() }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+
+            Divider()
+        }
+
         CommandMenu("Chat") {
             Button(state.chatVisible ? "Hide Chat" : "Show Chat") {
                 state.toggleChat()
@@ -45,7 +59,7 @@ struct AppCommands: Commands {
 
             Button("Clear Attached Context") { state.pendingContext = nil }
                 .disabled(state.pendingContext == nil)
-            Button("New Conversation") { state.messages.removeAll() }
+            Button("New Conversation") { state.newConversation() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Divider()

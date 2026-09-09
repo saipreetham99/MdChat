@@ -28,7 +28,7 @@ struct ChatPanel: View {
                     ForEach(state.messages) { msg in
                         MessageRow(message: msg).id(msg.id)
                     }
-                    if state.isSending {
+                    if state.isSending, state.messages.last?.text.isEmpty ?? true {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
                             Text("Thinking…").foregroundStyle(.secondary).font(.callout)
@@ -50,6 +50,12 @@ struct ChatPanel: View {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
             }
+            // Keep the tail in view as tokens land.
+            .onChange(of: state.messages.last?.text) { _ in
+                if let last = state.messages.last {
+                    proxy.scrollTo(last.id, anchor: .bottom)
+                }
+            }
         }
     }
 
@@ -64,13 +70,14 @@ struct ChatPanel: View {
                     .lineLimit(1...6)
                     .focused($composerFocused)
                     .onSubmit(send)
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill")
+                Button(action: state.isSending ? state.stop : send) {
+                    Image(systemName: state.isSending ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || state.isSending)
+                .disabled(!state.isSending && draft.trimmingCharacters(in: .whitespaces).isEmpty)
                 .keyboardShortcut(.return, modifiers: .command)
+                .help(state.isSending ? "Stop generating" : "Send (⌘↩)")
             }
             .padding(8)
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))

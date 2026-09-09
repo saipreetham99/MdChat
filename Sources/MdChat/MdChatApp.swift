@@ -78,7 +78,14 @@ struct AppCommands: Commands {
 
             Divider()
 
-            Button("API Key & Model…") { state.showSettings = true }
+            Picker("Model", selection: $state.provider) {
+                ForEach(Provider.allCases) { option in
+                    Text(option.displayName).tag(option)
+                }
+            }
+            .pickerStyle(.inline)
+
+            Button("API Keys & Models…") { state.showSettings = true }
                 .keyboardShortcut(",", modifiers: .command)
         }
     }

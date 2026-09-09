@@ -14,6 +14,11 @@ struct ChatMessage: Identifiable, Equatable {
     var patch: SourceAnchor? = nil
     var applied = false
     var discarded = false
+    /// Which backend and model produced a model reply — kept per message so
+    /// switching provider mid-conversation doesn't reprice old replies.
+    var providerID: String? = nil
+    var modelID: String? = nil
+    var usage: Usage? = nil
 }
 
 @MainActor
@@ -42,10 +47,25 @@ final class AppState: ObservableObject {
     /// bulky part, so this is a cap on them more than on the prose.
     private let historyBudget = 24_000
 
-    @Published var modelID: String {
-        didSet { UserDefaults.standard.set(modelID, forKey: "modelID") }
+    /// Cumulative spend across launches, per provider.
+    @Published private(set) var lifetimeCost: [String: Double] = [:]
+    @Published private(set) var lifetimeTokens: [String: Int] = [:]
+
+    @Published var provider: Provider {
+        didSet { UserDefaults.standard.set(provider.rawValue, forKey: "provider") }
     }
-    @Published var apiKey: String = ""
+    @Published private(set) var keys: [String: String] = [:]
+    @Published private(set) var modelIDs: [String: String] = [:]
+
+    var apiKey: String { key(for: provider) }
+    var modelID: String { model(for: provider) }
+
+    func key(for provider: Provider) -> String { keys[provider.rawValue] ?? "" }
+
+    func model(for provider: Provider) -> String {
+        let stored = modelIDs[provider.rawValue] ?? ""
+        return stored.isEmpty ? provider.defaultModel : stored
+    }
 
     @Published var appearance: Appearance {
         didSet {
@@ -58,10 +78,21 @@ final class AppState: ObservableObject {
     private var streamTask: Task<Void, Never>?
 
     private init() {
-        modelID = UserDefaults.standard.string(forKey: "modelID") ?? "gemini-flash-latest"
-        apiKey = Keychain.read() ?? ""
-        let saved = UserDefaults.standard.string(forKey: "appearance") ?? ""
-        appearance = Appearance(rawValue: saved) ?? .system
+        let savedProvider = UserDefaults.standard.string(forKey: "provider") ?? ""
+        provider = Provider(rawValue: savedProvider) ?? .gemini
+
+        let savedAppearance = UserDefaults.standard.string(forKey: "appearance") ?? ""
+        appearance = Appearance(rawValue: savedAppearance) ?? .system
+
+        for candidate in Provider.allCases {
+            keys[candidate.rawValue] = Keychain.read(candidate.rawValue) ?? ""
+            modelIDs[candidate.rawValue] =
+                UserDefaults.standard.string(forKey: "model." + candidate.rawValue) ?? ""
+            lifetimeCost[candidate.rawValue] =
+                UserDefaults.standard.double(forKey: "spend." + candidate.rawValue)
+            lifetimeTokens[candidate.rawValue] =
+                UserDefaults.standard.integer(forKey: "spentTokens." + candidate.rawValue)
+        }
     }
 
     /// Setting it on NSApp covers the SwiftUI chrome and the web view, which maps
@@ -184,16 +215,21 @@ final class AppState: ObservableObject {
         rewriteMode = false
     }
 
-    func saveKey(_ key: String) {
-        apiKey = key
-        Keychain.write(key)
+    func saveCredentials(for provider: Provider, key: String, model: String) {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        keys[provider.rawValue] = trimmedKey
+        Keychain.write(trimmedKey, account: provider.rawValue)
+
+        let trimmedModel = model.trimmingCharacters(in: .whitespaces)
+        modelIDs[provider.rawValue] = trimmedModel
+        UserDefaults.standard.set(trimmedModel, forKey: "model." + provider.rawValue)
     }
 
     func send(_ prompt: String) {
         let question = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !isSending else { return }
         guard !apiKey.isEmpty else {
-            errorText = "Add a Gemini API key first (\u{2318},)."
+            errorText = "Add a \(provider.displayName) API key first (\u{2318},)."
             showSettings = true
             return
         }
@@ -214,33 +250,45 @@ final class AppState: ObservableObject {
 
         // Build the turns before the placeholder goes in; an empty model turn is rejected.
         // A rewrite is a one-shot: history would drag old prose into the replacement.
-        let turns: [Gemini.Turn]
+        let turns: [LLM.Turn]
         if asRewrite {
             let request = messages[messages.count - 1]
-            turns = [Gemini.Turn(role: "user", text: onTheWire(request))]
+            turns = [LLM.Turn(role: "user", text: onTheWire(request))]
             oldestSent = request.id      // a rewrite deliberately sends nothing else
         } else {
             turns = contextWindow()
         }
 
         let placeholder = ChatMessage(role: .model, text: "",
-                                      patch: asRewrite ? anchor : nil)
+                                      patch: asRewrite ? anchor : nil,
+                                      providerID: provider.rawValue,
+                                      modelID: modelID)
         let id = placeholder.id
         messages.append(placeholder)
         isSending = true
 
         let name = fileURL?.lastPathComponent ?? "untitled.md"
+        let backend = provider
         let key = apiKey
         let model = modelID
         let system = asRewrite ? Prompt.rewrite(documentName: name)
                                : Prompt.system(documentName: name)
 
+        let promptChars = turns.reduce(0) { $0 + $1.text.count } + system.count
+
         streamTask = Task { [weak self] in
             do {
-                for try await delta in Gemini.stream(apiKey: key, model: model, system: system, turns: turns) {
+                let replies = LLM.stream(provider: backend, apiKey: key, model: model,
+                                         system: system, turns: turns)
+                for try await event in replies {
                     guard let self else { return }
                     guard let i = self.index(of: id) else { break }   // bubble was cleared
-                    self.messages[i].text += delta
+                    switch event {
+                    case .text(let delta):
+                        self.messages[i].text += delta
+                    case .usage(let usage):
+                        self.messages[i].usage = usage
+                    }
                 }
             } catch {
                 if !(error is CancellationError) {
@@ -251,6 +299,17 @@ final class AppState: ObservableObject {
             // Nothing arrived (error or immediate stop): drop the empty bubble.
             if let i = self.index(of: id), self.messages[i].text.isEmpty {
                 self.messages.remove(at: i)
+            } else if let i = self.index(of: id) {
+                // A stopped or older stream may never send a usage frame.
+                if self.messages[i].usage == nil {
+                    self.messages[i].usage = Usage.estimate(
+                        inputChars: promptChars,
+                        outputChars: self.messages[i].text.count
+                    )
+                }
+                if let usage = self.messages[i].usage {
+                    self.record(usage, provider: backend, model: model)
+                }
             }
             self.isSending = false
             self.streamTask = nil
@@ -259,7 +318,7 @@ final class AppState: ObservableObject {
 
     /// Newest-first walk that keeps whole turns until the budget runs out. The
     /// current question always goes, however big its excerpt.
-    private func contextWindow() -> [Gemini.Turn] {
+    private func contextWindow() -> [LLM.Turn] {
         var kept: [ChatMessage] = []
         var used = 0
 
@@ -275,12 +334,55 @@ final class AppState: ObservableObject {
         while ordered.first?.role == .model { ordered.removeFirst() }
 
         oldestSent = ordered.count < messages.count ? ordered.first?.id : nil
-        return ordered.map { Gemini.Turn(role: $0.role.rawValue, text: onTheWire($0)) }
+        return ordered.map { LLM.Turn(role: $0.role.rawValue, text: onTheWire($0)) }
     }
 
     private func onTheWire(_ msg: ChatMessage) -> String {
         guard msg.role == .user, let ctx = msg.context else { return msg.text }
         return "From the document I'm reading:\n\n\(ctx)\n\n---\n\n\(msg.text)"
+    }
+
+    // MARK: - Cost
+
+    private func record(_ usage: Usage, provider: Provider, model: String) {
+        let spend = Prices.rate(provider: provider, model: model).cost(usage)
+        lifetimeCost[provider.rawValue] = (lifetimeCost[provider.rawValue] ?? 0) + spend
+        lifetimeTokens[provider.rawValue] = (lifetimeTokens[provider.rawValue] ?? 0) + usage.total
+        UserDefaults.standard.set(lifetimeCost[provider.rawValue],
+                                  forKey: "spend." + provider.rawValue)
+        UserDefaults.standard.set(lifetimeTokens[provider.rawValue],
+                                  forKey: "spentTokens." + provider.rawValue)
+    }
+
+    /// Priced per message with its own provider and model, not today's setting.
+    func cost(of message: ChatMessage) -> Double? {
+        guard let usage = message.usage,
+              let id = message.providerID,
+              let provider = Provider(rawValue: id),
+              let model = message.modelID else { return nil }
+        let rate = Prices.rate(provider: provider, model: model)
+        return rate.isSet ? rate.cost(usage) : nil
+    }
+
+    var sessionCost: Double {
+        messages.reduce(0) { $0 + (cost(of: $1) ?? 0) }
+    }
+
+    var sessionTokens: Int {
+        messages.reduce(0) { $0 + ($1.usage?.total ?? 0) }
+    }
+
+    /// nil restores the bundled rate card for that model.
+    func setRateOverride(_ rate: Rate?, provider: Provider, model: String) {
+        Prices.setOverride(rate, provider: provider, model: model)
+        objectWillChange.send()
+    }
+
+    func resetLifetime(for provider: Provider) {
+        lifetimeCost[provider.rawValue] = 0
+        lifetimeTokens[provider.rawValue] = 0
+        UserDefaults.standard.set(0.0, forKey: "spend." + provider.rawValue)
+        UserDefaults.standard.set(0, forKey: "spentTokens." + provider.rawValue)
     }
 
     // MARK: - Patching
@@ -377,7 +479,7 @@ final class AppState: ObservableObject {
     | ⌘R | Reload from disk |
     | ⌘, | API key and model |
 
-    Add your Gemini API key with **⌘,** — it's stored in the login Keychain.
+    Add an API key with **⌘,** — Gemini or Muse Spark, stored in the login Keychain.
     """
 }
 

@@ -70,6 +70,20 @@ struct ChatPanel: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if state.sessionTokens > 0 {
+                HStack(spacing: 6) {
+                    Text("This conversation")
+                    Text(Prices.money(state.sessionCost)).foregroundStyle(.primary)
+                    Text("·")
+                    Text("\(Prices.tokens(state.sessionTokens)) tokens")
+                    Spacer()
+                    Button("Costs") { state.showSettings = true }
+                        .buttonStyle(.plain)
+                        .underline()
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
             if let ctx = state.pendingContext {
                 ContextChip(text: ctx,
                             rewriting: state.rewriteMode,
@@ -144,13 +158,37 @@ private struct MessageRow: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            if message.role == .model, !isStreaming, let usage = message.usage {
+                Text(meter(usage))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// "1.2k in · 386 out · $0.0021", with ~ when the counts are estimated and
+    /// a nudge when there's no rate to price them with.
+    private func meter(_ usage: Usage) -> String {
+        let tilde = usage.estimated ? "~" : ""
+        var parts = ["\(tilde)\(Prices.tokens(usage.inputTokens)) in",
+                     "\(Prices.tokens(usage.outputTokens)) out"]
+        if let spend = state.cost(of: message) {
+            parts.append(Prices.money(spend))
+        } else {
+            parts.append("unpriced model")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private var label: String {
         if message.patch != nil { return "Proposed rewrite" }
-        return message.role == .user ? "You" : "Gemini"
+        if message.role == .user { return "You" }
+        if let id = message.providerID, let provider = Provider(rawValue: id) {
+            return provider.displayName
+        }
+        return "Assistant"
     }
 
     /// A patch is shown as a diff and never written without a decision.

@@ -25,6 +25,13 @@ final class PreviewBridge {
         webView?.evaluateJavaScript("window.setView && window.setView('\(name)')")
     }
 
+    func applyPatch(start: Int, end: Int, text: String) {
+        guard let web = webView else { return }
+        let payload = (try? JSONSerialization.data(withJSONObject: [text]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        web.evaluateJavaScript("window.applyPatch && window.applyPatch(\(start), \(end), \(payload)[0])")
+    }
+
     /// The editor buffer is the truth while editing, so read it before saving.
     func readBuffer() async -> String? {
         guard let web = webView else { return nil }
@@ -35,7 +42,7 @@ final class PreviewBridge {
 
 struct PreviewView: NSViewRepresentable {
     var markdown: String
-    var onMessage: (String, String) -> Void
+    var onMessage: (String, [String: Any]) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onMessage: onMessage) }
 
@@ -65,12 +72,12 @@ struct PreviewView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         weak var webView: WKWebView?
-        private let onMessage: (String, String) -> Void
+        private let onMessage: (String, [String: Any]) -> Void
         private var ready = false
         private var pending: String?
         private var current: String?
 
-        init(onMessage: @escaping (String, String) -> Void) {
+        init(onMessage: @escaping (String, [String: Any]) -> Void) {
             self.onMessage = onMessage
         }
 
@@ -99,7 +106,7 @@ struct PreviewView: NSViewRepresentable {
                                    didReceive message: WKScriptMessage) {
             guard let dict = message.body as? [String: Any],
                   let kind = dict["kind"] as? String else { return }
-            onMessage(kind, dict["text"] as? String ?? "")
+            onMessage(kind, dict)
         }
 
         // Open real links in the browser instead of inside the preview.

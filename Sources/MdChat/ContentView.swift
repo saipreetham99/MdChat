@@ -6,12 +6,18 @@ struct ContentView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            PreviewView(markdown: state.markdown) { kind, text in
+            PreviewView(markdown: state.markdown) { kind, payload in
+                let text = payload["text"] as? String ?? ""
                 switch kind {
-                case "context": state.attach(context: text)
-                case "buffer":  state.bufferChanged(text)
-                case "save":    state.save()
-                default:        break
+                case "context":
+                    state.attach(
+                        context: text,
+                        start: (payload["start"] as? NSNumber)?.intValue,
+                        end: (payload["end"] as? NSNumber)?.intValue
+                    )
+                case "buffer": state.bufferChanged(text)
+                case "save":   state.save()
+                default:       break
                 }
             }
             .frame(minWidth: 320)

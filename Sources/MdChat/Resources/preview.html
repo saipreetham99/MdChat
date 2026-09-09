@@ -215,6 +215,9 @@
     box-shadow: 0 1px 3px rgba(0,0,0,.3);
   }
   .jump-label.dim { background: var(--muted); }
+  .cm-patched {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
   .cm-jump-hl {
     background: color-mix(in srgb, var(--accent) 30%, transparent);
     border-radius: 2px;
@@ -266,14 +269,35 @@
   var hoverTarget = null;
   var dark = window.matchMedia("(prefers-color-scheme: dark)");
 
-  function post(kind, text) {
+  function post(kind, text, start, end) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridge) {
-      window.webkit.messageHandlers.bridge.postMessage({ kind: kind, text: text || "" });
+      var msg = { kind: kind, text: text || "" };
+      if (typeof start === "number" && typeof end === "number") {
+        msg.start = start;
+        msg.end = end;
+      }
+      window.webkit.messageHandlers.bridge.postMessage(msg);
     }
   }
 
-  function sendContext(text) {
-    if (text && text.trim()) post("context", text);
+  /**
+   * Context is always whole source lines. That makes it a replaceable range
+   * rather than a loose quote, which is what patching needs.
+   */
+  function sendRange(start, end) {
+    if (typeof start !== "number" || typeof end !== "number") return;
+    start = Math.max(0, start);
+    end = Math.min(LINES.length, end);
+    if (end <= start) return;
+    var text = LINES.slice(start, end).join("\n").replace(/\s+$/, "");
+    if (!text.trim()) return;
+    post("context", text, start, end);
+  }
+
+  function blockRange(el) {
+    var a = parseInt(el.getAttribute("data-line-start"), 10);
+    var b = parseInt(el.getAttribute("data-line-end"), 10);
+    return isNaN(a) || isNaN(b) ? null : { start: a, end: b };
   }
 
   // --- markdown-it with source line mapping ------------------------------
@@ -345,25 +369,15 @@
     renderPreview();
   };
 
-  // --- source slicing ----------------------------------------------------
-  function slice(start, end) {
-    if (start == null) return "";
-    return LINES.slice(start, end).join("\n").replace(/\s+$/, "");
-  }
-
-  function blockSource(el) {
-    return slice(parseInt(el.getAttribute("data-line-start"), 10),
-                 parseInt(el.getAttribute("data-line-end"), 10));
-  }
-
+  // --- source ranges -----------------------------------------------------
   function headingLevel(el) {
     return /^H[1-6]$/.test(el.tagName) ? parseInt(el.tagName[1], 10) : 0;
   }
 
   /** Everything from this heading down to the next heading of same or higher rank. */
-  function sectionSource(el) {
+  function sectionRange(el) {
     var level = headingLevel(el);
-    if (!level) return blockSource(el);
+    if (!level) return blockRange(el);
     var start = parseInt(el.getAttribute("data-line-start"), 10);
     var all = Array.prototype.slice.call(doc.querySelectorAll("h1,h2,h3,h4,h5,h6"));
     var end = LINES.length;
@@ -373,7 +387,7 @@
       if (isNaN(hs) || hs <= start) continue;
       if (headingLevel(h) <= level) { end = hs; break; }
     }
-    return slice(start, end);
+    return { start: start, end: end };
   }
 
   function flash(el) {
@@ -425,7 +439,8 @@
   hoverPicker.addEventListener("click", function (e) {
     var act = e.target.getAttribute("data-act");
     if (!act || !hoverTarget) return;
-    sendContext(act === "section" ? sectionSource(hoverTarget) : blockSource(hoverTarget));
+    var range = act === "section" ? sectionRange(hoverTarget) : blockRange(hoverTarget);
+    if (range) sendRange(range.start, range.end);
     flash(hoverTarget);
     hoverPicker.classList.remove("on");
   });
@@ -451,7 +466,8 @@
 
   selPicker.addEventListener("mousedown", function (e) { e.preventDefault(); });
   selPicker.addEventListener("click", function () {
-    sendContext(selectionText());
+    var range = selectionLineRange();
+    if (range) sendRange(range.start, range.end);
     selPicker.classList.remove("on");
   });
 
@@ -459,13 +475,14 @@
   // Opening the panel to type a plain question shouldn't attach anything.
   window.captureSelectionOnly = function () {
     if (view === "edit" && cm) {
-      var selected = cm.getSelection();
-      if (selected && selected.trim()) sendContext(selected);
+      flushBuffer();
+      var edRange = editorSelectionRange();
+      if (edRange) sendRange(edRange.start, edRange.end);
       return;
     }
-    var text = selectionText();
-    if (!text) return;
-    sendContext(text);
+    var range = selectionLineRange();
+    if (!range) return;
+    sendRange(range.start, range.end);
     selPicker.classList.remove("on");
     if (mode !== "normal") setMode("normal");
   };
@@ -473,19 +490,22 @@
   // Called from the ⌘↩ menu command.
   window.captureSelection = function () {
     if (view === "edit" && cm) {
-      var selected = cm.getSelection();
-      sendContext(selected && selected.trim() ? selected : blockAroundCursor());
+      flushBuffer();
+      var edRange = editorSelectionRange() || editorParagraphRange();
+      sendRange(edRange.start, edRange.end);
       return;
     }
-    var text = selectionText();
-    if (text) {
-      sendContext(text);
+    var range = selectionLineRange();
+    if (range) {
+      sendRange(range.start, range.end);
       selPicker.classList.remove("on");
       if (mode !== "normal") setMode("normal");
       return;
     }
     var block = focusPoint && doc.contains(focusPoint.node) ? blockAt(focusPoint) : hoverTarget;
-    if (block) { sendContext(blockSource(block)); flash(block); }
+    if (!block) return;
+    var blockLines = blockRange(block);
+    if (blockLines) { sendRange(blockLines.start, blockLines.end); flash(block); }
   };
 
   // ===================== vim motions =====================================
@@ -816,18 +836,6 @@
     return cm;
   }
 
-  /** The current line plus its contiguous non-blank neighbours. */
-  function blockAroundCursor() {
-    var line = cm.getCursor().line;
-    if (!cm.getLine(line) || !cm.getLine(line).trim()) return cm.getLine(line) || "";
-    var top = line, bottom = line;
-    while (top > 0 && cm.getLine(top - 1) && cm.getLine(top - 1).trim()) top--;
-    while (bottom < cm.lineCount() - 1 && cm.getLine(bottom + 1) && cm.getLine(bottom + 1).trim()) bottom++;
-    var out = [];
-    for (var i = top; i <= bottom; i++) out.push(cm.getLine(i));
-    return out.join("\n");
-  }
-
   // --- cursor mapping between the two views ------------------------------
   // Rendered text has the markup stripped, so both sides get normalised the
   // same way and matched on a short probe string taken at the cursor.
@@ -929,6 +937,10 @@
 
   /** Preview caret -> {line, ch} in the source. */
   function sourcePosFromCaret() {
+    return sourcePosFromPoint(focusPoint);
+  }
+
+  function sourcePosFromPoint(focusPoint) {
     if (!focusPoint || !doc.contains(focusPoint.node)) return null;
     var block = blockAt(focusPoint);
     if (!block) return null;
@@ -973,6 +985,70 @@
 
     return flat.points[0] || null;
   }
+
+  /** Selected range in the preview -> whole-line source range. */
+  function selectionLineRange() {
+    var s = sel();
+    if (!s || !s.rangeCount || s.isCollapsed) return null;
+    var r = s.getRangeAt(0);
+    if (!doc.contains(r.startContainer) || !doc.contains(r.endContainer)) return null;
+
+    var a = sourcePosFromPoint({ node: r.startContainer, offset: r.startOffset });
+    var b = sourcePosFromPoint({ node: r.endContainer, offset: r.endOffset });
+    if (!a && !b) return null;
+    if (!a) a = b;
+    if (!b) b = a;
+
+    return { start: Math.min(a.line, b.line), end: Math.max(a.line, b.line) + 1 };
+  }
+
+  /** Cursor's paragraph in the editor -> line range. */
+  function editorParagraphRange() {
+    var line = cm.getCursor().line;
+    if (!cm.getLine(line) || !cm.getLine(line).trim()) return { start: line, end: line + 1 };
+    var top = line, bottom = line;
+    while (top > 0 && cm.getLine(top - 1) && cm.getLine(top - 1).trim()) top--;
+    while (bottom < cm.lineCount() - 1 && cm.getLine(bottom + 1) && cm.getLine(bottom + 1).trim()) bottom++;
+    return { start: top, end: bottom + 1 };
+  }
+
+  function editorSelectionRange() {
+    var head = cm.getCursor("head");
+    var anchor = cm.getCursor("anchor");
+    if (head.line === anchor.line && head.ch === anchor.ch) return null;
+    return {
+      start: Math.min(head.line, anchor.line),
+      end: Math.max(head.line, anchor.line) + 1
+    };
+  }
+
+  /** Replace a line range. Goes through CodeMirror so ⌘Z undoes it. */
+  window.applyPatch = function (start, end, text) {
+    ensureEditor();
+    if (start < 0 || start >= cm.lineCount()) return false;
+
+    var lastLine = Math.min(end - 1, cm.lineCount() - 1);
+    var from = { line: start, ch: 0 };
+    var to = { line: lastLine, ch: cm.getLine(lastLine).length };
+
+    cm.replaceRange(text, from, to);
+    flushBuffer();
+    post("buffer", SRC);
+
+    var added = text.split("\n").length;
+    var mark = cm.markText({ line: start, ch: 0 },
+                           { line: Math.min(start + added - 1, cm.lineCount() - 1),
+                             ch: cm.getLine(Math.min(start + added - 1, cm.lineCount() - 1)).length },
+                           { className: "cm-patched" });
+    setTimeout(function () { mark.clear(); }, 1400);
+
+    if (view !== "edit") {
+      renderPreview();
+      var block = blockForLine(start);
+      if (block) flash(block);
+    }
+    return true;
+  };
 
   // --- flash-style jump inside the editor --------------------------------
   function edClear() {

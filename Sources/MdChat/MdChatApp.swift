@@ -62,6 +62,12 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut(.return, modifiers: .command)
 
+            Button("Rewrite Selection…") { state.startRewrite() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
+            Button("Apply Rewrite") { state.applyLatestPatch() }
+                .keyboardShortcut(.return, modifiers: [.command, .option])
+
 
             Divider()
 

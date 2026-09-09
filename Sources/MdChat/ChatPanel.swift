@@ -26,7 +26,7 @@ struct ChatPanel: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if state.messages.isEmpty {
-                        Text("Pick a block, diagram, or heading in the document, then ask about it.")
+                        Text("Pick a block, diagram, or heading in the document, then ask about it. ⌘⇧R asks for a rewrite instead.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .padding(.top, 8)
@@ -71,10 +71,15 @@ struct ChatPanel: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let ctx = state.pendingContext {
-                ContextChip(text: ctx) { state.pendingContext = nil }
+                ContextChip(text: ctx,
+                            rewriting: state.rewriteMode,
+                            lines: state.pendingAnchor,
+                            clear: state.clearPendingContext)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Ask about the document", text: $draft, axis: .vertical)
+                TextField(state.rewriteMode ? "How should this section change?"
+                                            : "Ask about the document",
+                          text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...6)
                     .focused($composerFocused)
@@ -91,7 +96,8 @@ struct ChatPanel: View {
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color(nsColor: .separatorColor))
+                    .strokeBorder(state.rewriteMode ? Color.accentColor
+                                                    : Color(nsColor: .separatorColor))
             )
         }
         .padding(12)
@@ -105,13 +111,18 @@ struct ChatPanel: View {
 }
 
 private struct MessageRow: View {
+    @EnvironmentObject var state: AppState
     let message: ChatMessage
+
+    private var isStreaming: Bool {
+        state.isSending && state.messages.last?.id == message.id
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(message.role == .user ? "You" : "Gemini")
+            Text(label)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(message.patch != nil ? Color.accentColor : .secondary)
 
             if let ctx = message.context {
                 Text(ctx)
@@ -124,7 +135,9 @@ private struct MessageRow: View {
                                 in: RoundedRectangle(cornerRadius: 6))
             }
 
-            if message.role == .model {
+            if let anchor = message.patch {
+                patchBody(anchor)
+            } else if message.role == .model {
                 MarkdownText(message.text)
             } else {
                 Text(message.text)
@@ -133,6 +146,51 @@ private struct MessageRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var label: String {
+        if message.patch != nil { return "Proposed rewrite" }
+        return message.role == .user ? "You" : "Gemini"
+    }
+
+    /// A patch is shown as a diff and never written without a decision.
+    @ViewBuilder
+    private func patchBody(_ anchor: SourceAnchor) -> some View {
+        if isStreaming {
+            // Raw while streaming: parsing markdown on every token would crawl
+            // for a long section, and a half-arrived diff is noise anyway.
+            Text(message.text)
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            DiffView(old: anchor.original, new: Patch.clean(message.text))
+
+            HStack(spacing: 8) {
+                Text("lines \(anchor.startLine + 1)–\(anchor.endLine)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+
+                if message.applied {
+                    Label("Applied", systemImage: "checkmark")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                } else if message.discarded {
+                    Text("Discarded")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Discard") { state.discardPatch(message.id) }
+                        .buttonStyle(.plain)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Apply") { state.applyPatch(message.id) }
+                        .font(.caption2)
+                        .help("Apply (⌘⌥↩)")
+                }
+            }
+        }
     }
 }
 
@@ -153,15 +211,25 @@ private struct TrimMarker: View {
 
 private struct ContextChip: View {
     let text: String
+    let rewriting: Bool
+    let lines: SourceAnchor?
     let clear: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "text.quote").foregroundStyle(.secondary)
-            Text(text)
-                .font(.system(size: 11, design: .monospaced))
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: rewriting ? "pencil.line" : "text.quote")
+                .foregroundStyle(rewriting ? Color.accentColor : .secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                if rewriting || lines != nil {
+                    Text(header)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(rewriting ? Color.accentColor : .secondary)
+                }
+                Text(text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Button(action: clear) {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
             }
@@ -169,6 +237,12 @@ private struct ContextChip: View {
             .help("Clear attached context")
         }
         .padding(8)
-        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+        .background((rewriting ? Color.accentColor : Color.gray).opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var header: String {
+        let range = lines.map { "lines \($0.startLine + 1)–\($0.endLine)" } ?? "no source range"
+        return rewriting ? "REWRITING \(range)" : range.uppercased()
     }
 }

@@ -110,6 +110,8 @@ or press ⌘J twice, or Escape out of the chat composer.
 | ⌘J | Toggle chat panel; brings any selection in as context |
 | ⌘↩ | Send selection (or the block at the cursor) as context |
 | ↩ | Send the chat message (⇧↩ for a newline) |
+| ⌘⇧R | Rewrite the selection (ask for an edit) |
+| ⌘⌥↩ | Apply the pending rewrite |
 | ⌘⇧N | New conversation (also stops a stream) |
 | ⌘R | Reload from disk, discarding edits |
 | ⌘⇧D | Cycle appearance: system, light, dark |
@@ -205,6 +207,44 @@ rename that the watcher notices, and the reload that follows compares text and
 no-ops. If the file changes on disk while your buffer is dirty, the reload backs
 off and says so rather than eating your edits — ⌘R forces it.
 
+## Rewriting a section
+
+Select something, press **⌘⇧R**, describe the change ("tighten this", "add a
+Florida example", "turn this into a table"), and the reply comes back as a
+proposed replacement rather than an answer. The bubble shows a line diff with
+**Apply** and **Discard**; ⌘⌥↩ applies the newest pending one. Nothing is
+written to the buffer until you decide, and nothing is saved until ⌘S.
+
+Some deliberate choices in there:
+
+**Context is always whole source lines.** Every capture path — block, section,
+drag selection, `v`/`V`, editor selection — resolves to a line range, and the
+excerpt sent to the model is those exact lines. Partial-line replacement is
+where a bad patch corrupts markup, so it isn't possible.
+
+**Patches go through CodeMirror**, creating the editor hidden if you're in
+preview. That means ⌘Z undoes an applied rewrite with no undo stack of my own,
+and the preview re-renders from the buffer as usual.
+
+**A patch is verified before it lands.** The anchor stores the original text
+alongside its line range. On apply, if those lines still match, it writes there.
+If they don't — you edited above it, or reloaded — it searches the buffer for the
+original text and re-anchors if there's exactly one match. Two matches or none
+and it refuses and tells you to re-select. That's the whole safety story: an
+apply either lands on text identical to what the model saw, or doesn't happen.
+
+**Rewrites don't carry history.** A rewrite request sends only itself, not the
+conversation, since prior prose in the context tends to leak into the
+replacement. The transcript marker reflects that.
+
+**Streaming patches render as plain monospace** until complete, then become a
+diff. Re-parsing markdown per token is fine for a paragraph and visibly slow for
+a long section, and a half-arrived diff is noise regardless.
+
+The system prompt for this path lives in `Prompt.rewrite`, separate from the
+chat one: raw markdown only, no preamble, preserve heading levels and list
+style. `Patch.clean` strips a wrapping fence when the model adds one anyway.
+
 ## Replies and history
 
 Replies render as blocks, not one attributed string: `MarkdownText.swift` splits
@@ -241,6 +281,8 @@ Keychain.swift     ~40 lines around SecItem*
 Appearance.swift   light/dark/system enum
 Prompt.swift       the system prompt, tune it here
 MarkdownText.swift block-level renderer for replies
+Patch.swift        source anchors, patch verification, line diff
+DiffView.swift     the inline diff shown before applying
 Resources/preview.html  render + line mapping + pickers + vim layer + editor
 ```
 
@@ -261,3 +303,7 @@ re-renders.
   are arriving; stopping keeps whatever text already landed.
 - Only the newest turns that fit a 24k-character budget are sent (see below).
   Older ones stay in the transcript but leave the model's context.
+- A rewrite's diff is line-level, so a one-word change shows as a whole line
+  replaced. Word-level intra-line diffing isn't implemented.
+- Unsandboxed and ad-hoc signed — it's a local tool. Add entitlements and a real
+  signing identity if you want to distribute it.

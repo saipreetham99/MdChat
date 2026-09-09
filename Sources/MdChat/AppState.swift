@@ -8,6 +8,12 @@ struct ChatMessage: Identifiable, Equatable {
     let role: Role
     var text: String
     var context: String? = nil
+    /// Where a user message's excerpt came from.
+    var anchor: SourceAnchor? = nil
+    /// Set on a model reply that is a proposed replacement for that excerpt.
+    var patch: SourceAnchor? = nil
+    var applied = false
+    var discarded = false
 }
 
 @MainActor
@@ -18,6 +24,9 @@ final class AppState: ObservableObject {
     @Published var markdown: String = AppState.welcome
     @Published var chatVisible = true
     @Published var pendingContext: String?
+    @Published var pendingAnchor: SourceAnchor?
+    /// The next send is a rewrite request rather than a question.
+    @Published var rewriteMode = false
     @Published var messages: [ChatMessage] = []
     @Published var isSending = false
     @Published var errorText: String?
@@ -144,12 +153,35 @@ final class AppState: ObservableObject {
         }
     }
 
-    func attach(context: String) {
+    func attach(context: String, start: Int? = nil, end: Int? = nil) {
         let trimmed = context.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         pendingContext = trimmed
+        if let start, let end, end > start {
+            pendingAnchor = SourceAnchor(startLine: start, endLine: end, original: context)
+        } else {
+            pendingAnchor = nil
+        }
         chatVisible = true
         composerFocusToken += 1
+    }
+
+    /// ⌘⇧R: the next message describes an edit to the attached excerpt.
+    func startRewrite() {
+        if pendingAnchor == nil { PreviewBridge.shared.captureSelectionOnly() }
+        rewriteMode = true
+        chatVisible = true
+        composerFocusToken += 1
+    }
+
+    func cancelRewrite() {
+        rewriteMode = false
+    }
+
+    func clearPendingContext() {
+        pendingContext = nil
+        pendingAnchor = nil
+        rewriteMode = false
     }
 
     func saveKey(_ key: String) {
@@ -166,21 +198,42 @@ final class AppState: ObservableObject {
             return
         }
 
-        messages.append(ChatMessage(role: .user, text: question, context: pendingContext))
+        let asRewrite = rewriteMode
+        if asRewrite && pendingAnchor == nil {
+            errorText = "Select the section you want rewritten first."
+            return
+        }
+
+        let anchor = pendingAnchor
+        messages.append(ChatMessage(role: .user, text: question,
+                                    context: pendingContext, anchor: anchor))
         pendingContext = nil
+        pendingAnchor = nil
+        rewriteMode = false
         errorText = nil
 
         // Build the turns before the placeholder goes in; an empty model turn is rejected.
-        let turns = contextWindow()
+        // A rewrite is a one-shot: history would drag old prose into the replacement.
+        let turns: [Gemini.Turn]
+        if asRewrite {
+            let request = messages[messages.count - 1]
+            turns = [Gemini.Turn(role: "user", text: onTheWire(request))]
+            oldestSent = request.id      // a rewrite deliberately sends nothing else
+        } else {
+            turns = contextWindow()
+        }
 
-        let placeholder = ChatMessage(role: .model, text: "")
+        let placeholder = ChatMessage(role: .model, text: "",
+                                      patch: asRewrite ? anchor : nil)
         let id = placeholder.id
         messages.append(placeholder)
         isSending = true
 
+        let name = fileURL?.lastPathComponent ?? "untitled.md"
         let key = apiKey
         let model = modelID
-        let system = Prompt.system(documentName: fileURL?.lastPathComponent ?? "untitled.md")
+        let system = asRewrite ? Prompt.rewrite(documentName: name)
+                               : Prompt.system(documentName: name)
 
         streamTask = Task { [weak self] in
             do {
@@ -230,6 +283,47 @@ final class AppState: ObservableObject {
         return "From the document I'm reading:\n\n\(ctx)\n\n---\n\n\(msg.text)"
     }
 
+    // MARK: - Patching
+
+    /// Writes a proposed replacement into the buffer, but only where it still
+    /// matches what was sent. Goes through CodeMirror, so ⌘Z undoes it.
+    func applyPatch(_ id: UUID) {
+        guard let i = messages.firstIndex(where: { $0.id == id }),
+              let anchor = messages[i].patch else { return }
+
+        let replacement = Patch.clean(messages[i].text)
+        guard !replacement.isEmpty else { return }
+
+        let lines = markdown.components(separatedBy: "\n")
+        guard let range = Patch.locate(anchor, in: lines) else {
+            errorText = "That section moved or changed since you asked. Re-select it and try again."
+            return
+        }
+
+        PreviewBridge.shared.applyPatch(start: range.lowerBound,
+                                        end: range.upperBound,
+                                        text: replacement)
+        messages[i].applied = true
+        isDirty = true
+        errorText = nil
+    }
+
+    func discardPatch(_ id: UUID) {
+        guard let i = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[i].discarded = true
+    }
+
+    /// ⌘⌥↩ acts on the newest reply that's still awaiting a decision.
+    func applyLatestPatch() {
+        guard let msg = messages.last(where: {
+            $0.patch != nil && !$0.applied && !$0.discarded && !$0.text.isEmpty
+        }) else {
+            errorText = "No pending rewrite to apply."
+            return
+        }
+        applyPatch(msg.id)
+    }
+
     func stop() {
         streamTask?.cancel()
         streamTask = nil
@@ -240,6 +334,8 @@ final class AppState: ObservableObject {
         stop()
         messages.removeAll()
         oldestSent = nil
+        rewriteMode = false
+        pendingAnchor = nil
         errorText = nil
     }
 

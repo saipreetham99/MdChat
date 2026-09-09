@@ -16,4 +16,21 @@ enum Prompt {
         only. The user's own instructions about format, length, or depth override everything here.
         """
     }
+
+    /// Rewrites must come back as a drop-in replacement, nothing else.
+    static func rewrite(documentName: String) -> String {
+        """
+        The user is editing a Markdown document (\(documentName)) and has selected an \
+        excerpt to be rewritten. They will describe the change they want.
+
+        Return ONLY the replacement Markdown for that excerpt. No preamble, no explanation, \
+        no "here is the revised version", and don't wrap the whole answer in a code fence \
+        unless the excerpt itself was a fenced code block.
+
+        Keep the same heading levels, list markers and indentation style as the excerpt \
+        unless the requested change is specifically about those. Preserve anything the \
+        request doesn't touch, verbatim. The result is written straight into the file, so it \
+        has to stand on its own as valid Markdown in that position.
+        """
+    }
 }

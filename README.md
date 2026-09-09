@@ -141,5 +141,3 @@ re-renders.
   formatting but not fenced code blocks in the reply.
 - The whole conversation is resent each turn. Fine for a document Q&A session;
   ⌘⇧N when it gets long.
-- Unsandboxed and ad-hoc signed — it's a local tool. Add entitlements and a real
-  signing identity if you want to distribute it.

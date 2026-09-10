@@ -113,6 +113,10 @@ is answering, greyed out when it has no key.
 | ⌘R | Reload from disk, discarding edits |
 | ⌘= / ⌘- | Zoom the document in / out |
 | ⌘0 | Back to actual size |
+| ⌘⇧Space | Start / pause the pomodoro |
+| ⌘⌥S | Skip to the next phase |
+| ⌘⌥R | Reset the current phase |
+| ⌘⌥T | Timer settings |
 | ⌘⇧D | Cycle appearance: system, light, dark |
 | ⌘, | API keys and models |
 
@@ -348,6 +352,22 @@ event's modifier flags when AppKit sends `insertNewline(_:)` and decides: shift
 means break the line, otherwise send. Escape returns focus to the preview, and
 the field grows with the text up to about six lines.
 
+## Pomodoro
+
+The toolbar item next to the edit/preview toggle shows the phase icon and the
+countdown; its menu has start, pause, skip, reset, and a phase picker. Defaults
+are the standard 25/5/15 with a long break every fourth focus block, all
+adjustable in ⌘⌥T along with the two chimes.
+
+Sounds are macOS system sounds played by name through `NSSound`, so nothing is
+bundled and nothing is downloaded. One plays when a break begins, one when focus
+resumes; a manual skip stays silent, since you already know you skipped.
+
+The countdown targets a wall-clock `endDate` rather than counting ticks down, so
+a busy main thread or a dropped timer fire can't make it drift — the display
+just recomputes from the deadline. Settings persist in `UserDefaults`; the
+focus-block count resets each launch.
+
 ## Replies and history
 
 Replies render as blocks, not one attributed string: `MarkdownText.swift` splits
@@ -386,6 +406,7 @@ Pricing.swift      token usage, bundled rate cards, overrides, formatting
 Keychain.swift     ~40 lines around SecItem*
 Appearance.swift   light/dark/system enum
 Prompt.swift       the system prompt, tune it here
+Pomodoro.swift     timer model, toolbar item, settings sheet
 MarkdownText.swift block-level renderer for replies
 Patch.swift        source anchors, patch verification, line diff
 DiffView.swift     the inline diff shown before applying

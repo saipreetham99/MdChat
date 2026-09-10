@@ -20,6 +20,7 @@ struct MdChatApp: App {
 
 struct AppCommands: Commands {
     @ObservedObject var state: AppState
+    @ObservedObject var pomodoro = Pomodoro.shared
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -60,6 +61,27 @@ struct AppCommands: Commands {
                 .disabled(state.zoom == 1.0)
 
             Divider()
+        }
+
+        CommandMenu("Timer") {
+            Button(pomodoro.running ? "Pause" : "Start \(pomodoro.phase.label)") {
+                pomodoro.toggle()
+            }
+            .keyboardShortcut(.space, modifiers: [.command, .shift])
+
+            Button("Skip Phase") { pomodoro.skip() }
+                .keyboardShortcut("s", modifiers: [.command, .option])
+
+            Button("Reset Timer") { pomodoro.reset() }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+                .disabled(pomodoro.isIdleAtStart)
+
+            Divider()
+
+            Toggle("Auto-start Next Phase", isOn: $pomodoro.autoStart)
+
+            Button("Timer Settings…") { pomodoro.showSettings = true }
+                .keyboardShortcut("t", modifiers: [.command, .option])
         }
 
         CommandMenu("Chat") {

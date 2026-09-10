@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
+    @ObservedObject private var pomodoro = Pomodoro.shared
     @State private var panelWidth: CGFloat = 380
 
     var body: some View {
@@ -43,6 +44,7 @@ struct ContentView: View {
                 }
                 .help(state.editing ? "Preview (⌘E)" : "Edit (⌘E)")
             }
+            ToolbarItem { PomodoroToolbarItem() }
             ToolbarItem {
                 Menu {
                     Picker("Model", selection: $state.provider) {
@@ -86,6 +88,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $state.showSettings) { SettingsSheet() }
+        .sheet(isPresented: $pomodoro.showSettings) { PomodoroSettingsSheet() }
         .navigationTitle("MdChat")
         .onAppear { state.applyAppearance() }
     }

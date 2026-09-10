@@ -3,7 +3,7 @@ import SwiftUI
 struct ChatPanel: View {
     @EnvironmentObject var state: AppState
     @State private var draft = ""
-    @FocusState private var composerFocused: Bool
+    @State private var draftHeight: CGFloat = 20
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,13 +12,6 @@ struct ChatPanel: View {
             composer
         }
         .background(.background)
-        .onAppear { composerFocused = true }
-        .onChange(of: state.composerFocusToken) { _ in composerFocused = true }
-        // Escape hands the keyboard back to the preview's vim layer.
-        .onExitCommand {
-            composerFocused = false
-            PreviewBridge.shared.focusPreview()
-        }
     }
 
     private var transcript: some View {
@@ -91,13 +84,17 @@ struct ChatPanel: View {
                             clear: state.clearPendingContext)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                TextField(state.rewriteMode ? "How should this section change?"
-                                            : "Ask about the document",
-                          text: $draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...6)
-                    .focused($composerFocused)
-                    .onSubmit(send)
+                ComposerField(
+                    text: $draft,
+                    height: $draftHeight,
+                    placeholder: state.rewriteMode ? "How should this section change?"
+                                                   : "Ask about the document",
+                    focusToken: state.composerFocusToken,
+                    onSubmit: send,
+                    // Escape hands the keyboard back to the preview's vim layer.
+                    onEscape: { PreviewBridge.shared.focusPreview() }
+                )
+                .frame(height: draftHeight)
                 Button(action: state.isSending ? state.stop : send) {
                     Image(systemName: state.isSending ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.title3)

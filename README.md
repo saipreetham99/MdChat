@@ -100,7 +100,8 @@ is answering, greyed out when it has no key.
 | ⌘S | Save (`:w` also works) |
 | ⌘J | Toggle chat panel; brings any selection in as context |
 | ⌘↩ | Send selection (or the block at the cursor) as context |
-| ↩ | Send the chat message (⇧↩ for a newline) |
+| ↩ | Send the chat message |
+| ⇧↩ | Newline in the chat message |
 | ⌘⇧R | Rewrite the selection (ask for an edit) |
 | ⌘⌥↩ | Apply the pending rewrite |
 | ⌘Z | Undo an applied rewrite (in edit view) |
@@ -334,6 +335,13 @@ it, so switching provider mid-conversation labels bubbles correctly instead of
 retroactively renaming old ones — and the transcript continues rather than
 resetting, since history is re-serialised per request anyway.
 
+The composer is an `NSTextView` rather than a SwiftUI `TextField`. The vertical
+`TextField` on macOS submits on ⇧↩ and reserves ⌥↩ for a newline, with no
+option to swap them — backwards for a chat box. `ComposerField` reads the live
+event's modifier flags when AppKit sends `insertNewline(_:)` and decides: shift
+means break the line, otherwise send. Escape returns focus to the preview, and
+the field grows with the text up to about six lines.
+
 ## Replies and history
 
 Replies render as blocks, not one attributed string: `MarkdownText.swift` splits
@@ -363,6 +371,7 @@ earlier is explainable rather than mysterious. Tune `historyBudget` in
 MdChatApp.swift    @main, window, menu commands
 ContentView.swift  HStack split + settings sheet
 ChatPanel.swift    transcript, context chip, composer
+ComposerField.swift NSTextView composer: ↩ sends, ⇧↩ breaks the line
 PreviewView.swift  NSViewRepresentable over WKWebView + JS bridge
 AppState.swift     document, file watcher, message list, send()
 LLM.swift          streaming client for both providers, no SDK
@@ -402,5 +411,3 @@ re-renders.
   ⌘, and override if it's drifted. Treat totals as an estimate, not a bill.
 - Only standard-tier text rates are modelled — not Batch, Flex, Priority,
   context caching, cached-input discounts, or grounding-per-request fees.
-- Unsandboxed and ad-hoc signed — it's a local tool. Add entitlements and a real
-  signing identity if you want to distribute it.

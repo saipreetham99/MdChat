@@ -1,3 +1,5 @@
+.DS_Store
 .build/
 MdChat.app/
 Sources/MdChat/Resources/vendor/
+.DS_Store

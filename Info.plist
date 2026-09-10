@@ -8,6 +8,8 @@
     <string>MdChat</string>
     <key>CFBundleExecutable</key>
     <string>MdChat</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.local.mdchat</string>
     <key>CFBundlePackageType</key>

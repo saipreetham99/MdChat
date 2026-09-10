@@ -15,7 +15,10 @@ struct ComposerField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeNSView(context: Context) -> ComposerTextView {
+    /// Six lines of draft, then it scrolls instead of growing.
+    static let maxHeight: CGFloat = 156
+
+    func makeNSView(context: Context) -> NSScrollView {
         let view = ComposerTextView()
         view.delegate = context.coordinator
         view.isRichText = false
@@ -23,13 +26,32 @@ struct ComposerField: NSViewRepresentable {
         view.drawsBackground = false
         view.font = .systemFont(ofSize: NSFont.systemFontSize)
         view.textContainerInset = NSSize(width: 0, height: 3)
-        view.textContainer?.widthTracksTextView = true
         view.placeholder = placeholder
+
+        // Resizable in the vertical direction only, so the scroll view has
+        // something taller than itself to scroll once the draft is long.
+        view.minSize = NSSize(width: 0, height: 0)
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.textContainer?.widthTracksTextView = true
+        view.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+
+        let scroll = NSScrollView()
+        scroll.documentView = view
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.verticalScrollElasticity = .allowed
+
         context.coordinator.textView = view
-        return view
+        return scroll
     }
 
-    func updateNSView(_ view: ComposerTextView, context: Context) {
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? ComposerTextView else { return }
         context.coordinator.parent = self
         if view.string != text { view.string = text }
         view.placeholder = placeholder
@@ -54,14 +76,14 @@ struct ComposerField: NSViewRepresentable {
             syncHeight()
         }
 
-        /// Grow with the text, up to six lines or so, then stop.
+        /// Grow with the text up to the cap; past that the scroll view takes over.
         func syncHeight() {
             guard let view = textView,
                   let manager = view.layoutManager,
                   let container = view.textContainer else { return }
             manager.ensureLayout(for: container)
             let used = manager.usedRect(for: container).height + view.textContainerInset.height * 2
-            let clamped = min(max(20, used), 120)
+            let clamped = min(max(20, used), ComposerField.maxHeight)
             if abs(parent.height - clamped) > 0.5 { parent.height = clamped }
         }
 

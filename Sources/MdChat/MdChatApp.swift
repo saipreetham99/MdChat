@@ -10,8 +10,9 @@ struct MdChatApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(state)
-                .frame(minWidth: 720, minHeight: 460)
+                .frame(minWidth: 720, minHeight: 600)
         }
+        .defaultSize(width: 1100, height: 820)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands { AppCommands(state: state) }
     }

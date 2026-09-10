@@ -30,6 +30,10 @@ required, because `vendor/` is gitignored and the app renders nothing without
 it. `build.sh` takes `debug` or `release` (default `release`) and ad-hoc signs
 the bundle so Keychain and network access behave.
 
+The app icon comes from `Icon/AppIcon.icns`, which `build.sh` copies into the
+bundle. To change the artwork, replace `Icon/icon-1024.png` and run
+`./make-icon.sh` (which uses `sips` and `iconutil`).
+
 Move `MdChat.app` wherever you like, or leave it in the tree. Rebuilding
 replaces it, so keep it where `build.sh` puts it if you plan to iterate.
 
@@ -107,6 +111,8 @@ is answering, greyed out when it has no key.
 | ⌘Z | Undo an applied rewrite (in edit view) |
 | ⌘⇧N | New conversation (also stops a stream) |
 | ⌘R | Reload from disk, discarding edits |
+| ⌘= / ⌘- | Zoom the document in / out |
+| ⌘0 | Back to actual size |
 | ⌘⇧D | Cycle appearance: system, light, dark |
 | ⌘, | API keys and models |
 
@@ -386,6 +392,12 @@ DiffView.swift     the inline diff shown before applying
 Resources/preview.html  render + line mapping + pickers + vim layer + editor
 ```
 
+Zoom rides on `WKWebView.pageZoom`, which is why one setting covers preview
+text, editor text, and the Mermaid SVGs together — scaling CSS by hand would
+have missed the diagrams, since their dimensions are baked into the generated
+SVG. It persists across launches and applies to the document only, not the chat
+panel or the app chrome.
+
 Appearance is set on `NSApplication.shared`, which covers the SwiftUI chrome and
 the preview together: WebKit maps the view's effective appearance onto
 `prefers-color-scheme`, so the CSS variables and the Mermaid theme both follow.
@@ -411,3 +423,5 @@ re-renders.
   ⌘, and override if it's drifted. Treat totals as an estimate, not a bill.
 - Only standard-tier text rates are modelled — not Batch, Flex, Priority,
   context caching, cached-input discounts, or grounding-per-request fees.
+- Unsandboxed and ad-hoc signed — it's a local tool. Add entitlements and a real
+  signing identity if you want to distribute it.

@@ -67,6 +67,13 @@ final class AppState: ObservableObject {
         return stored.isEmpty ? provider.defaultModel : stored
     }
 
+    @Published var zoom: Double {
+        didSet {
+            UserDefaults.standard.set(zoom, forKey: "zoom")
+            PreviewBridge.shared.setZoom(zoom)
+        }
+    }
+
     @Published var appearance: Appearance {
         didSet {
             UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
@@ -80,6 +87,8 @@ final class AppState: ObservableObject {
     private init() {
         let savedProvider = UserDefaults.standard.string(forKey: "provider") ?? ""
         provider = Provider(rawValue: savedProvider) ?? .gemini
+
+        zoom = UserDefaults.standard.object(forKey: "zoom") as? Double ?? 1.0
 
         let savedAppearance = UserDefaults.standard.string(forKey: "appearance") ?? ""
         appearance = Appearance(rawValue: savedAppearance) ?? .system
@@ -103,6 +112,19 @@ final class AppState: ObservableObject {
 
     func cycleAppearance() {
         appearance = appearance.next
+    }
+
+    // MARK: - Zoom
+
+    /// Geometric steps, so in and out are exact inverses.
+    func zoomIn() { zoom = clampZoom(zoom * 1.1) }
+    func zoomOut() { zoom = clampZoom(zoom / 1.1) }
+    func zoomReset() { zoom = 1.0 }
+
+    var zoomPercent: Int { Int((zoom * 100).rounded()) }
+
+    private func clampZoom(_ value: Double) -> Double {
+        min(3.0, max(0.5, (value * 100).rounded() / 100))
     }
 
     // MARK: - Document

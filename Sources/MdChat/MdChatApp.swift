@@ -50,6 +50,16 @@ struct AppCommands: Commands {
                 .keyboardShortcut("d", modifiers: [.command, .shift])
 
             Divider()
+
+            Button("Zoom In") { state.zoomIn() }
+                .keyboardShortcut("=", modifiers: .command)
+            Button("Zoom Out") { state.zoomOut() }
+                .keyboardShortcut("-", modifiers: .command)
+            Button("Actual Size (\(state.zoomPercent)%)") { state.zoomReset() }
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(state.zoom == 1.0)
+
+            Divider()
         }
 
         CommandMenu("Chat") {

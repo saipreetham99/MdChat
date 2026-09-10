@@ -21,6 +21,11 @@ final class PreviewBridge {
         web.window?.makeFirstResponder(web)
     }
 
+    /// One call covers preview text, editor text, and Mermaid SVGs.
+    func setZoom(_ factor: Double) {
+        webView?.pageZoom = CGFloat(factor)
+    }
+
     func setView(_ name: String) {
         webView?.evaluateJavaScript("window.setView && window.setView('\(name)')")
     }
@@ -63,6 +68,7 @@ struct PreviewView: NSViewRepresentable {
 
         context.coordinator.webView = web
         PreviewBridge.shared.webView = web
+        web.pageZoom = CGFloat(AppState.shared.zoom)
         return web
     }
 

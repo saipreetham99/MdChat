@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 @main
 struct MdChatApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var state = AppState.shared
 
     var body: some Scene {
@@ -13,8 +14,23 @@ struct MdChatApp: App {
                 .frame(minWidth: 720, minHeight: 600)
         }
         .defaultSize(width: 1100, height: 820)
+        // Opening a file replaces what the one window shows (AppDelegate)
+        // instead of spawning a window per Finder open.
+        .handlesExternalEvents(matching: [])
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands { AppCommands(state: state) }
+    }
+}
+
+/// Finder's Open / double-click arrives as an open-documents event, not a
+/// launch argument, on a cold start as well as when already running.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first(where: \.isFileURL) else { return }
+        Task { @MainActor in
+            AppState.shared.open(url: url)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }
 

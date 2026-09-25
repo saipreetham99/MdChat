@@ -3,7 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var state: AppState
     @ObservedObject private var pomodoro = Pomodoro.shared
-    @State private var panelWidth: CGFloat = 380
+    @ViewState private var panelWidth: CGFloat = 380
 
     var body: some View {
         HStack(spacing: 0) {
@@ -97,11 +97,11 @@ struct ContentView: View {
 struct SettingsSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
-    @State private var editing: Provider = .gemini
-    @State private var key = ""
-    @State private var model = ""
-    @State private var rateIn = ""
-    @State private var rateOut = ""
+    @ViewState private var editing: Provider = .gemini
+    @ViewState private var key = ""
+    @ViewState private var model = ""
+    @ViewState private var rateIn = ""
+    @ViewState private var rateOut = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {

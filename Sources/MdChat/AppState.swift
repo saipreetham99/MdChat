@@ -27,7 +27,7 @@ final class AppState: ObservableObject {
 
     @Published var fileURL: URL?
     @Published var markdown: String = AppState.welcome
-    @Published var chatVisible = true
+    @Published var chatVisible = false
     @Published var pendingContext: String?
     @Published var pendingAnchor: SourceAnchor?
     /// The next send is a rewrite request rather than a question.

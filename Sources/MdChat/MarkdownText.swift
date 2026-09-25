@@ -77,7 +77,7 @@ struct MarkdownText: View {
 private struct CodeBlock: View {
     let code: String
     let language: String?
-    @State private var copied = false
+    @ViewState private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

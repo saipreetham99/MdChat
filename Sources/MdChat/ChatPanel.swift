@@ -2,8 +2,8 @@ import SwiftUI
 
 struct ChatPanel: View {
     @EnvironmentObject var state: AppState
-    @State private var draft = ""
-    @State private var draftHeight: CGFloat = 20
+    @ViewState private var draft = ""
+    @ViewState private var draftHeight: CGFloat = 20
 
     var body: some View {
         VStack(spacing: 0) {

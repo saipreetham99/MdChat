@@ -119,12 +119,24 @@ struct PreviewView: NSViewRepresentable {
         func webView(_ web: WKWebView,
                      decidePolicyFor action: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            if action.navigationType == .linkActivated, let url = action.request.url {
-                NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
-            } else {
+            guard action.navigationType == .linkActivated, let url = action.request.url else {
                 decisionHandler(.allow)
+                return
             }
+            decisionHandler(.cancel)
+            // An anchor into the preview page itself (preview.html#heading): scroll, never hand
+            // the bundle's preview.html to the browser. The page's click handler normally catches
+            // these first; this is the fallback.
+            if url.isFileURL, let fragment = url.fragment, url.path == web.url?.path {
+                let payload = (try? JSONSerialization.data(withJSONObject: [fragment]))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+                web.evaluateJavaScript("""
+                    (function (id) { var el = document.getElementById(id);
+                      if (el) el.scrollIntoView({ block: "start" }); })(\(payload)[0])
+                    """)
+                return
+            }
+            NSWorkspace.shared.open(url)
         }
     }
 }

@@ -312,6 +312,39 @@
     });
   });
 
+  // GitHub-style heading ids so "#some-heading" links written for GitHub work here too.
+  function slugify(text) {
+    return text.trim().toLowerCase()
+      .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+      .replace(/\s/g, "-");
+  }
+  md.core.ruler.push("heading_ids", function (state) {
+    var seen = {};
+    state.tokens.forEach(function (t, i) {
+      if (t.type !== "heading_open") return;
+      var inline = state.tokens[i + 1];
+      var text = (inline && inline.children || [])
+        .filter(function (c) { return c.type === "text" || c.type === "code_inline"; })
+        .map(function (c) { return c.content; }).join("");
+      var slug = slugify(text);
+      if (!slug) return;
+      var id = seen[slug] ? slug + "-" + seen[slug] : slug;
+      seen[slug] = (seen[slug] || 0) + 1;
+      t.attrSet("id", id);
+    });
+  });
+
+  // In-page links (#heading) scroll the preview instead of leaving it.
+  doc.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest('a[href^="#"]');
+    if (!a) return;
+    e.preventDefault();
+    var id = decodeURIComponent(a.getAttribute("href").slice(1));
+    var target = id ? document.getElementById(id) : null;
+    if (target) target.scrollIntoView({ block: "start" });
+    else if (!id) window.scrollTo(0, 0);
+  });
+
   var defaultFence = md.renderer.rules.fence;
   md.renderer.rules.fence = function (tokens, idx, options, env, self) {
     var t = tokens[idx];

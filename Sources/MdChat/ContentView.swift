@@ -18,6 +18,9 @@ struct ContentView: View {
                     )
                 case "buffer": state.bufferChanged(text)
                 case "save":   state.save()
+                case "copy":
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
                 default:       break
                 }
             }

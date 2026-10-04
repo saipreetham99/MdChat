@@ -68,6 +68,28 @@
     line-height: 1.5;
   }
   pre code { background: none; padding: 0; font-size: 1em; }
+  .code { position: relative; }
+  .code .copy {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    padding: 5px;
+    color: var(--muted);
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    opacity: 0;
+    transition: opacity .12s;
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .code:hover .copy, .code .copy.done { opacity: 1; }
+  .code .copy:hover { color: var(--fg); }
+  .code .copy svg { width: 14px; height: 14px; }
+  .code .copy .check, .code .copy.done .clip { display: none; }
+  .code .copy.done .check { display: block; color: var(--accent); }
   table { border-collapse: collapse; font-size: .94em; }
   th, td { border: 1px solid var(--rule); padding: .4em .7em; text-align: left; }
   th { background: var(--code-bg); font-weight: 600; }
@@ -356,8 +378,28 @@
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       return '<div class="mermaid" data-line-start="' + a + '" data-line-end="' + b + '">' + body + "</div>";
     }
-    return defaultFence(tokens, idx, options, env, self);
+    // Icon-only button: no text nodes, so vim motions and selections skip it.
+    return '<div class="code">' + defaultFence(tokens, idx, options, env, self) +
+      '<button class="copy" title="Copy">' + COPY_ICON + CHECK_ICON + "</button></div>";
   };
+
+  var COPY_ICON = '<svg class="clip" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">' +
+    '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3.5V9A1.5 1.5 0 0 0 4 10.5h1.5"/></svg>';
+  var CHECK_ICON = '<svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">' +
+    '<path d="M3 8.5l3.2 3L13 4.5"/></svg>';
+
+  doc.addEventListener("mousedown", function (e) {
+    if (e.target.closest && e.target.closest(".copy")) e.preventDefault();
+  });
+  doc.addEventListener("click", function (e) {
+    var btn = e.target.closest && e.target.closest(".copy");
+    if (!btn) return;
+    var code = btn.parentNode.querySelector("pre code") || btn.parentNode.querySelector("pre");
+    post("copy", code.textContent.replace(/\n$/, ""));
+    btn.classList.add("done");
+    clearTimeout(btn._t);
+    btn._t = setTimeout(function () { btn.classList.remove("done"); }, 1200);
+  });
 
   function initMermaid() {
     if (!window.mermaid) return;
@@ -456,6 +498,8 @@
       if (view === "edit") return;
       if (e.target.closest && e.target.closest(".picker")) return;
       var block = e.target.closest ? e.target.closest("#doc [data-line-start]") : null;
+      var wrap = !block && e.target.closest && e.target.closest("#doc .code");
+      if (wrap) block = wrap.querySelector("[data-line-start]");
       if (!block) {
         hoverPicker.classList.remove("on");
         hoverTarget = null;
